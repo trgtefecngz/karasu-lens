@@ -124,7 +124,7 @@ pub fn redact_secrets(input: &str) -> RedactionResult {
 
         // 3b. Database connection URL password (keeps scheme, user and host).
         if is_token_boundary(prev)
-            && let Some((pw_start, pw_end)) = match_database_url_password(input, i)
+            && let Some((pw_start, pw_end)) = match_database_url_secret(input, i)
         {
             out.push_str(&input[i..pw_start]);
             record_redaction(
@@ -380,7 +380,7 @@ const DATABASE_URL_SCHEMES: &[&str] = &[
 ];
 
 /// Returns the byte span of the password in `scheme://user:password@host`.
-fn match_database_url_password(input: &str, start: usize) -> Option<(usize, usize)> {
+fn match_database_url_secret(input: &str, start: usize) -> Option<(usize, usize)> {
     let rest = &input[start..];
     let scheme_len = DATABASE_URL_SCHEMES
         .iter()
@@ -398,17 +398,17 @@ fn match_database_url_password(input: &str, start: usize) -> Option<(usize, usiz
     let userinfo_len = after_scheme[..authority_len].rfind('@')?;
     let userinfo = &after_scheme[..userinfo_len];
     let colon = userinfo.find(':')?;
-    let password = &userinfo[colon + 1..];
-    if is_placeholder_password(password) {
+    let secret_part = &userinfo[colon + 1..];
+    if is_documentation_placeholder(secret_part) {
         return None;
     }
     let pw_start = start + scheme_len + colon + 1;
-    Some((pw_start, pw_start + password.len()))
+    Some((pw_start, pw_start + secret_part.len()))
 }
 
 /// Documentation-style passwords (`password`, `${DB_PASSWORD}`, `<password>`, `****`) are not
 /// secrets; masking them would only make examples harder to read.
-fn is_placeholder_password(password: &str) -> bool {
+fn is_documentation_placeholder(value: &str) -> bool {
     const WORDS: &[&str] = &[
         "password",
         "pass",
@@ -421,12 +421,12 @@ fn is_placeholder_password(password: &str) -> bool {
         "your_password",
         "your-password",
     ];
-    password.is_empty()
-        || password.starts_with(['$', '<', '{', '['])
-        || password
+    value.is_empty()
+        || value.starts_with(['$', '<', '{', '['])
+        || value
             .bytes()
             .all(|b| matches!(b, b'*' | b'x' | b'X' | b'.'))
-        || WORDS.iter().any(|w| password.eq_ignore_ascii_case(w))
+        || WORDS.iter().any(|w| value.eq_ignore_ascii_case(w))
 }
 
 fn match_aws_secret_assignment(input: &str, start: usize) -> Option<(usize, usize)> {
