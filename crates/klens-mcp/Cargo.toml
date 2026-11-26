@@ -1,0 +1,20 @@
+[package]
+name = "klens-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Ultra-lightweight Windows-safe stdio MCP server for Karasu Lens (`klens`)"
+
+[dependencies]
+klens-blueprint = { path = "../klens-blueprint" }
+klens-code = { path = "../klens-code" }
+klens-core = { path = "../klens-core" }
+klens-exec = { path = "../klens-exec" }
+klens-memory = { path = "../klens-memory" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

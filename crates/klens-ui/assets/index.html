@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Karasu Lens</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar" role="banner">
+    <div class="topbar-left">
+      <div class="brand" title="Karasu Lens">
+        <svg class="brand-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8" />
+          <circle cx="12" cy="12" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8" />
+          <line x1="12" y1="3" x2="12" y2="6" stroke="currentColor" stroke-width="1.8" />
+          <line x1="12" y1="18" x2="12" y2="21" stroke="currentColor" stroke-width="1.8" />
+          <line x1="3" y1="12" x2="6" y2="12" stroke="currentColor" stroke-width="1.8" />
+          <line x1="18" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="1.8" />
+        </svg>
+        <span class="brand-name" data-i18n="app.name">Karasu Lens</span>
+      </div>
+
+      <button id="btn-project-picker" class="btn btn-project" type="button">
+        <span class="project-dot"></span>
+        <span id="active-project-label" data-i18n="topbar.selectProject">Select Project</span>
+      </button>
+
+      <span id="badge-readonly" class="badge badge-amber hidden" data-i18n="topbar.readOnly">Read-Only</span>
+    </div>
+
+    <div class="topbar-right">
+      <button id="btn-health" class="btn btn-ghost" type="button" title="Project Health">
+        <span id="health-dot" class="traffic-dot dot-neutral"></span>
+        <span data-i18n="topbar.health">Health</span>
+      </button>
+
+      <button id="btn-checkpoint" class="btn btn-ghost" type="button" data-i18n="topbar.checkpoint">Checkpoint</button>
+      <button id="btn-handoff" class="btn btn-ghost" type="button" data-i18n="topbar.handoff">Handoff</button>
+      <button id="btn-settings" class="btn btn-ghost" type="button" data-i18n="topbar.settings">Settings &amp; Agents</button>
+
+      <select id="select-lang" class="select-compact" aria-label="UI Language">
+        <option value="en">EN</option>
+        <option value="tr">TR</option>
+        <option value="de">DE</option>
+        <option value="es">ES</option>
+        <option value="fr">FR</option>
+        <option value="pt">PT</option>
+      </select>
+
+      <button id="btn-theme" class="btn btn-ghost btn-icon" type="button" title="Toggle Theme" aria-label="Toggle Theme">◐</button>
+      <button id="btn-shutdown" class="btn btn-danger-ghost" type="button" data-i18n="topbar.shutdown">Shutdown</button>
+    </div>
+  </header>
+
+  <nav id="tab-bar" class="tab-bar" role="tablist">
+    <button class="tab-btn active" data-tab="blueprint" role="tab" aria-selected="true" data-i18n="tab.blueprint">Blueprint</button>
+    <button class="tab-btn" data-tab="code" role="tab" aria-selected="false" data-i18n="tab.code">Code &amp; Memory Map</button>
+    <button class="tab-btn" data-tab="memory" role="tab" aria-selected="false" data-i18n="tab.memory">Memory &amp; Runs</button>
+    <button class="tab-btn" data-tab="stats" role="tab" aria-selected="false" data-i18n="tab.stats">Real Stats</button>
+  </nav>
+
+  <main class="main-shell">
+    <!-- Auth Required View -->
+    <section id="view-auth" class="empty-card hidden">
+      <h2 data-i18n="auth.title">Local Session Required</h2>
+      <p class="muted" data-i18n="auth.body">Open the tokenized loopback URL printed in your terminal to establish a secure local session.</p>
+    </section>
+
+    <!-- Welcome View (no active project selected) -->
+    <section id="view-welcome" class="welcome-panel hidden">
+      <div class="welcome-head">
+        <h1 data-i18n="welcome.title">Select a Project or Start a New Blueprint</h1>
+        <p class="muted" data-i18n="welcome.subtitle">Choose an existing workspace with 1-click folder browsing, open a registered project, or inspect safely in read-only mode.</p>
+        <div class="row gap-sm mt-md">
+          <button id="btn-welcome-browse" class="btn btn-primary" type="button" data-i18n="welcome.openPicker">Browse Folders</button>
+        </div>
+      </div>
+      <div class="card mt-lg">
+        <div class="card-header">
+          <h3 data-i18n="welcome.registered">Registered Projects</h3>
+        </div>
+        <div id="welcome-registered-list" class="list-stack"></div>
+      </div>
+    </section>
+
+    <!-- TAB 1: Blueprint Canvas -->
+    <section id="tab-blueprint" class="tab-pane">
+      <div class="step-strip" id="bp-steps">
+        <span class="step-pill" data-step="1" data-i18n="bp.step1">1. Goal</span>
+        <span class="step-sep">→</span>
+        <span class="step-pill" data-step="2" data-i18n="bp.step2">2. Fill Bubbles</span>
+        <span class="step-sep">→</span>
+        <span class="step-pill" data-step="3" data-i18n="bp.step3">3. Conflict Check</span>
+        <span class="step-sep">→</span>
+        <span class="step-pill" data-step="4" data-i18n="bp.step4">4. Lock &amp; Execute</span>
+        <span class="spacer"></span>
+        <span class="muted small" data-i18n="bp.aiSyncHint">Live sync active (2s).</span>
+      </div>
+      <div id="bp-content"></div>
+    </section>
+
+    <!-- TAB 2: Live Code & Memory Graph -->
+    <section id="tab-code" class="tab-pane hidden">
+      <div class="toolbar">
+        <input id="code-filter" class="input" type="search" data-i18n-placeholder="code.filterPlaceholder" placeholder="Filter files or clusters..." />
+        <button id="btn-refresh-graph" class="btn btn-ghost" type="button" data-i18n="code.refresh">Refresh Graph</button>
+        <div class="pill-group graph-zoom-controls" aria-label="Graph Zoom Controls">
+          <button id="btn-graph-zoom-out" class="pill" type="button" title="Zoom Out">-</button>
+          <button id="btn-graph-zoom-reset" class="pill mono" type="button" title="Reset Zoom">100%</button>
+          <button id="btn-graph-zoom-in" class="pill" type="button" title="Zoom In">+</button>
+          <button id="btn-graph-fit" class="pill" type="button" data-i18n="code.fitView">Fit</button>
+        </div>
+        <div class="legend">
+          <span class="legend-item"><i class="line-solid"></i><span data-i18n="code.legendExtracted">EXTRACTED (solid)</span></span>
+          <span class="legend-item"><i class="line-dashed"></i><span data-i18n="code.legendInferred">INFERRED (dashed)</span></span>
+          <span class="legend-item"><i class="line-dotted"></i><span data-i18n="code.legendAmbiguous">AMBIGUOUS (dotted)</span></span>
+        </div>
+        <span id="graph-summary" class="muted small"></span>
+      </div>
+      <div class="split-layout">
+        <div class="graph-stage card">
+          <div id="graph-clusters-bar" class="cluster-pills"></div>
+          <div class="graph-canvas-wrap">
+            <svg id="code-graph-svg" class="code-graph-svg" role="img" aria-label="Code and Memory Graph"></svg>
+          </div>
+        </div>
+        <aside id="node-inspector" class="inspector card">
+          <div class="card-header">
+            <h3 data-i18n="code.inspectorTitle">Node Inspector</h3>
+          </div>
+          <div id="node-inspector-body" class="inspector-body">
+            <p class="muted" data-i18n="code.selectNodeHint">Click any file node on the map to inspect symbols, blast radius, linked memories, or leave a feedback note.</p>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- TAB 3: Memory & Runs -->
+    <section id="tab-memory" class="tab-pane hidden">
+      <div class="subtab-bar">
+        <button class="subtab-btn active" data-subtab="vault" type="button" data-i18n="mem.subtabMemory">Memory Vault</button>
+        <button class="subtab-btn" data-subtab="runs" type="button" data-i18n="mem.subtabRuns">Run History</button>
+      </div>
+
+      <!-- Subtab: Memory Vault -->
+      <div id="subtab-vault">
+        <div class="toolbar">
+          <div class="pill-group" id="mem-filter-group">
+            <button class="pill active" data-filter="all" type="button" data-i18n="mem.filterAll">All</button>
+            <button class="pill" data-filter="stale" type="button" data-i18n="mem.filterStale">STALE</button>
+            <button class="pill" data-filter="decision" type="button">decision</button>
+            <button class="pill" data-filter="feedback" type="button">feedback</button>
+            <button class="pill" data-filter="bugfix" type="button">bugfix</button>
+            <button class="pill" data-filter="architecture" type="button">architecture</button>
+            <button class="pill" data-filter="constraint" type="button">constraint</button>
+          </div>
+          <input id="mem-search" class="input" type="search" data-i18n-placeholder="mem.searchPlaceholder" placeholder="Search notes (FTS5)..." />
+          <span class="spacer"></span>
+          <button id="btn-mem-verify" class="btn btn-ghost" type="button" data-i18n="mem.verifyAll">Verify All (BLAKE3)</button>
+          <button id="btn-mem-refresh-all" class="btn btn-ghost" type="button" data-i18n="mem.refreshAll">Refresh STALE</button>
+          <button id="btn-mem-export" class="btn btn-ghost" type="button" data-i18n="mem.export">Export</button>
+          <button id="btn-mem-obsidian" class="btn btn-ghost" type="button" data-i18n="mem.copyObsidian">Copy Obsidian Path</button>
+          <button id="btn-mem-new" class="btn btn-primary" type="button" data-i18n="mem.newNote">New Note</button>
+        </div>
+        <div class="split-layout">
+          <div id="mem-list" class="card list-pane"></div>
+          <aside id="mem-detail" class="card inspector"></aside>
+        </div>
+      </div>
+
+      <!-- Subtab: Runs -->
+      <div id="subtab-runs" class="hidden">
+        <div class="toolbar">
+          <div class="pill-group" id="runs-status-group">
+            <button class="pill active" data-run-status="all" type="button" data-i18n="mem.runsFilterAll">All</button>
+            <button class="pill" data-run-status="ok" type="button" data-i18n="mem.runsFilterOk">Exit 0</button>
+            <button class="pill" data-run-status="failed" type="button" data-i18n="mem.runsFilterFailed">Failed</button>
+          </div>
+          <input id="runs-search" class="input" type="search" data-i18n-placeholder="mem.runsSearchPlaceholder" placeholder="Filter by command, filter, ID, or exit..." />
+          <span class="spacer"></span>
+          <span id="runs-count" class="muted small mono"></span>
+        </div>
+        <div class="split-layout">
+          <div class="card list-pane">
+            <table class="data-table" id="runs-table">
+              <thead>
+                <tr>
+                  <th data-i18n="mem.runCommand">Command</th>
+                  <th data-i18n="mem.runExit">Exit</th>
+                  <th data-i18n="mem.runDuration">Duration</th>
+                  <th data-i18n="mem.runTokens">Raw -&gt; Filtered</th>
+                  <th data-i18n="mem.runSaved">Measured Saved</th>
+                </tr>
+              </thead>
+              <tbody id="runs-tbody"></tbody>
+            </table>
+          </div>
+          <aside id="run-detail" class="card inspector"></aside>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: Real Stats -->
+    <section id="tab-stats" class="tab-pane hidden">
+      <div class="toolbar">
+        <div class="pill-group" id="stats-range-group">
+          <button class="pill" data-range="today" type="button" data-i18n="stats.rangeToday">Today</button>
+          <button class="pill active" data-range="7d" type="button" data-i18n="stats.range7d">7 Days</button>
+          <button class="pill" data-range="30d" type="button" data-i18n="stats.range30d">30 Days</button>
+          <button class="pill" data-range="all" type="button" data-i18n="stats.rangeAll">All Time</button>
+        </div>
+        <div class="pill-group" id="stats-scope-group">
+          <button class="pill active" data-scope="all" type="button" data-i18n="stats.scopeAll">All Projects</button>
+          <button class="pill" data-scope="project" type="button" data-i18n="stats.scopeProject">Active Project</button>
+        </div>
+        <span class="spacer"></span>
+        <span id="stats-meta-label" class="muted small mono"></span>
+      </div>
+      <div id="stats-content"></div>
+    </section>
+  </main>
+
+  <!-- Modal Backdrop & Dialogs -->
+  <div id="modal-backdrop" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="modal-title">Modal</h3>
+        <button id="modal-close" class="btn btn-ghost btn-icon" type="button" aria-label="Close">✕</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Shutdown Overlay -->
+  <div id="shutdown-overlay" class="shutdown-overlay hidden" role="alertdialog" aria-modal="true" aria-labelledby="shutdown-title">
+    <div class="shutdown-card">
+      <div class="shutdown-icon" aria-hidden="true">⏻</div>
+      <h2 id="shutdown-title" data-i18n="shutdown.title">Server Stopped</h2>
+      <p class="muted" data-i18n="shutdown.body">Karasu Lens has shut down cleanly. You can safely close this browser tab.</p>
+      <p class="shutdown-hint mono small" data-i18n="shutdown.restartHint">Run `klens ui` or double-click the Karasu Lens binary to start again.</p>
+    </div>
+  </div>
+
+  <!-- Toast notifications -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <script src="/views_board.js"></script>
+  <script src="/views_vault.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

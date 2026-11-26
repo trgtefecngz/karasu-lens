@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+          components: rustfmt, clippy
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+      - name: Verify klens CLI binary
+        run: cargo run -p klens-cli -- --version
+
+      - name: release-smoke (isolated Windows lifecycle)
+        id: release-smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = Join-Path (Get-Location) 'target\debug\klens.exe'
+          if (-not (Test-Path $bin)) {
+            throw "Expected klens binary at $bin"
+          }
+
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "klens-release-smoke-$([guid]::NewGuid().ToString('N'))"
+          $smokeHome = Join-Path $smokeRoot 'home'
+          $smokeProj = Join-Path $smokeRoot 'project'
+          New-Item -ItemType Directory -Force -Path $smokeHome, (Join-Path $smokeProj 'src') | Out-Null
+          Set-Content -Path (Join-Path $smokeProj '.gitignore') -Value "target/`n" -Encoding utf8NoBOM
+          Set-Content -Path (Join-Path $smokeProj 'src\lib.rs') -Value "pub fn smoke() -> u32 { 1 }`n" -Encoding utf8NoBOM
+
+          $origUserProfile = $env:USERPROFILE
+          $origHome = $env:HOME
+          try {
+            $env:USERPROFILE = $smokeHome
+            $env:HOME = $smokeHome
+            Push-Location $smokeProj
+            try {
+              & $bin attach
+              if ($LASTEXITCODE -ne 0) { throw "klens attach failed ($LASTEXITCODE)" }
+
+              & $bin init --host auto --dry-run
+              if ($LASTEXITCODE -ne 0) { throw "klens init --host auto --dry-run failed ($LASTEXITCODE)" }
+
+              & $bin doctor
+              if ($LASTEXITCODE -ne 0) { throw "klens doctor failed ($LASTEXITCODE)" }
+
+              & $bin ext list
+              if ($LASTEXITCODE -ne 0) { throw "klens ext list failed ($LASTEXITCODE)" }
+
+              & $bin detach --purge
+              if ($LASTEXITCODE -ne 0) { throw "klens detach --purge failed ($LASTEXITCODE)" }
+
+              if (Test-Path (Join-Path $smokeProj '.klens')) {
+                throw "Expected .klens to be removed after klens detach --purge"
+              }
+            } finally {
+              Pop-Location
+            }
+          } finally {
+            $env:USERPROFILE = $origUserProfile
+            $env:HOME = $origHome
+            Remove-Item -Recurse -Force $smokeRoot -ErrorAction SilentlyContinue
+          }

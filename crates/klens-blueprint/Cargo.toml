@@ -1,0 +1,16 @@
+[package]
+name = "klens-blueprint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Pure deterministic Blueprint board engine, conflict checker, contract/task compiler, and session handoff composer for Karasu Lens"
+
+[dependencies]
+klens-core = { path = "../klens-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

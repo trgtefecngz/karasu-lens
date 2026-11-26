@@ -1,0 +1,33 @@
+# Rust / Cargo build artifacts
+/target
+/dist
+**/*.rs.bk
+
+# Karasu Lens ephemeral cache and run logs
+/.klens/cache/
+/.klens/runs/
+
+# Local-only maintainer notes (never pushed to the public repository)
+/notes-local/
+
+# Internal AI/development design notes and extension protocol drafts (kept locally only)
+/docs/
+/extensions/
+
+# OS & editor temporary files
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*.tmp
+*.temp
+*.bak
+*.orig
+*.log
+
+# Local environment & secret files
+.env
+.env.*
+*.pem
+*.key

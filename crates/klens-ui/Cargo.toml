@@ -1,0 +1,23 @@
+[package]
+name = "klens-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Lightweight synchronous local Web UI server and embedded offline frontend for Karasu Lens (`klens`)"
+
+[dependencies]
+blake3.workspace = true
+klens-adapters = { path = "../klens-adapters" }
+klens-blueprint = { path = "../klens-blueprint" }
+klens-code = { path = "../klens-code" }
+klens-core = { path = "../klens-core" }
+klens-exec = { path = "../klens-exec" }
+klens-memory = { path = "../klens-memory" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tiny_http.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/klens-core",
+    "crates/klens-code",
+    "crates/klens-exec",
+    "crates/klens-memory",
+    "crates/klens-blueprint",
+    "crates/klens-mcp",
+    "crates/klens-ui",
+    "crates/klens-adapters",
+    "crates/klens-cli",
+]
+
+[workspace.package]
+version = "0.3.2"
+edition = "2024"
+license = "LicenseRef-PolyForm-Strict-1.0.0"
+rust-version = "1.88"
+
+[workspace.dependencies]
+blake3 = "1.8"
+clap = { version = "4.5", features = ["derive"] }
+ignore = "0.4"
+rusqlite = { version = "0.37", default-features = false, features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tiny_http = { version = "0.12", default-features = false }
+toml = "0.8"
+tree-sitter = "0.25"
+tree-sitter-c = "0.24"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-cpp = "0.23"
+tree-sitter-go = "0.25"
+tree-sitter-java = "0.23"
+tree-sitter-php = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-ruby = "0.23"
+tree-sitter-rust = "0.24"
+tree-sitter-typescript = "0.23"
+
+[workspace.lints.clippy]
+print_stdout = "deny"
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1

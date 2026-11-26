@@ -1,0 +1,46 @@
+[package]
+name = "klens-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Single-binary CLI entry point for Karasu Lens (`klens`)"
+
+[[bin]]
+name = "klens"
+path = "src/main.rs"
+
+[[test]]
+name = "dep_budget"
+path = "../../tests/dep_budget.rs"
+
+[[test]]
+name = "adversarial_truth"
+path = "../../tests/adversarial_truth.rs"
+
+[[test]]
+name = "constitution_audit"
+path = "../../tests/constitution_audit.rs"
+
+[[test]]
+name = "language_sidecar"
+path = "../../tests/language_sidecar.rs"
+harness = false
+
+[dependencies]
+clap.workspace = true
+klens-adapters = { path = "../klens-adapters" }
+klens-blueprint = { path = "../klens-blueprint" }
+klens-code = { path = "../klens-code" }
+klens-core = { path = "../klens-core" }
+klens-exec = { path = "../klens-exec" }
+klens-mcp = { path = "../klens-mcp" }
+klens-memory = { path = "../klens-memory" }
+klens-ui = { path = "../klens-ui" }
+serde_json.workspace = true
+
+[dev-dependencies]
+rusqlite.workspace = true
+
+[lints]
+workspace = true
