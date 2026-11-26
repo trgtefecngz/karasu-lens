@@ -201,6 +201,4 @@ Karasu Lens is **source-available** under the [PolyForm Strict License 1.0.0](LI
 - ❌ You may not redistribute it, modify it, or build new works based on it.
 - 💼 Commercial use requires a separate license. Please open an issue to get in touch.
 
-Copyright © 2026 trgtefecngz. Versions up to and including 0.3.1 were published under the MIT
-License, and those copies remain under MIT. They also contain security issues fixed in 0.3.2, so
-please use the latest release.
+Copyright © 2026 trgtefecngz.

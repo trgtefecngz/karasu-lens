@@ -4,10 +4,10 @@
 //! Enforced by [`crate::paths::is_sensitive_path_with_extra`], which gates `ProjectRoot` reads
 //! and writes, `klens_read`, the FTS index (`klens_find`), and project maps.
 //!
-//! v0.3.2 widened the list beyond `.env` / `*.pem` / `*.key` / `id_rsa*` to cover modern SSH
-//! keys, cloud/GPG/Kubernetes credential directories, package-manager tokens, certificate
-//! stores, and AI/dev-tool token files. Rules are deliberately name-exact so ordinary source
-//! files (`src/keys.rs`, `src/credentials.rs`, `docs/aws-setup.md`) stay readable.
+//! The list covers `.env` files, private keys, SSH keys, cloud/GPG/Kubernetes credential
+//! directories, package-manager tokens, certificate stores, and AI/dev-tool token files. Rules
+//! are deliberately name-exact so ordinary source files (`src/keys.rs`, `src/credentials.rs`,
+//! `docs/aws-setup.md`) stay readable.
 
 /// Directory names whose entire contents are treated as credential material.
 pub const SENSITIVE_DIR_NAMES: &[&str] = &[".ssh", ".aws", ".gnupg", ".kube"];

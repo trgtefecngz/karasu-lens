@@ -251,7 +251,7 @@ fn mcp_token_budget_notifications_ids_and_windows_crlf_lf_flush() {
     );
     assert!(
         full_list_tokens <= 1_080,
-        "tools/list response is {full_list_tokens} tokens, exceeding v0.3.0 target <= 1,080"
+        "tools/list response is {full_list_tokens} tokens, exceeding target <= 1,080"
     );
 
     // 3. Explicit null ID echoed verbatim

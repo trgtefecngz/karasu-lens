@@ -1329,7 +1329,7 @@ fn runs_search_filter_side_by_side_and_i18n_key_parity() {
         );
     }
 
-    // 5. Phase 3 Vault Export & Batch Refresh + v0.2.1 UI Polish + v0.3.0 Shutdown Overlay controls.
+    // 5. Vault export & batch refresh, UI polish, and shutdown overlay controls.
     for needle in [
         r#"id="btn-mem-export""#,
         r#"id="btn-mem-refresh-all""#,

@@ -11,10 +11,8 @@ use std::path::{Path, PathBuf};
 
 /// Maximum allowed total `[[package]]` entries in `Cargo.lock`.
 ///
-/// Phase 0 baseline was 65; raised to 95 for Phase 1A (`ignore`, bundled `rusqlite`,
-/// `tree-sitter`, and 4 language grammars); raised deliberately to 105 in `v0.3.1`
-/// for the 6 new built-in Tree-sitter language grammars (`c`, `cpp`, `java`, `c-sharp`,
-/// `php`, `ruby`).
+/// The budget covers the vetted core dependencies (`ignore`, bundled `rusqlite`,
+/// `tree-sitter`) and the 10 built-in Tree-sitter language grammars.
 const MAX_LOCKFILE_PACKAGES: usize = 105;
 
 /// Heavy or out-of-scope crates forbidden in the Karasu Lens core binary.

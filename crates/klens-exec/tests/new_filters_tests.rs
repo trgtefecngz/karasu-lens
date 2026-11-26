@@ -1,4 +1,4 @@
-//! Comprehensive unit & integration tests for the 5 v0.2.0 Phase 2 filters:
+//! Comprehensive unit & integration tests for the 5 build/tool filters:
 //! `eslint`, `docker`, `make`, `gradle`, and `dotnet`.
 //!
 //! Verifies:

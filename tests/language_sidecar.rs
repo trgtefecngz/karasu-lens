@@ -1345,7 +1345,7 @@ fn t9_index_db_v1_to_v2_atomic_migration() {
     let db_path = sb.root.join(".klens").join("cache").join("index.db");
     fs::create_dir_all(db_path.parent().unwrap()).unwrap();
 
-    // Seed a genuine v0.1.2 SQLite v1 schema (9-column `files`, no `parse_cache_key`/`start_byte`).
+    // Seed a legacy SQLite v1 index schema (9-column `files`, no `parse_cache_key`/`start_byte`).
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.execute_batch(
@@ -1655,7 +1655,7 @@ fn t11_ctags_unavailable_and_mock_universal_json_cleanup() {
 fn t12_constitution_dep_budget_mcp_tools_and_repo_health() {
     let ws = find_workspace_root();
 
-    // 1. Cargo.lock package count <= 105 (v0.3.1 budget with 10 built-in Tree-sitter languages).
+    // 1. Cargo.lock package count <= 105 (budget with 10 built-in Tree-sitter languages).
     let lock_text = fs::read_to_string(ws.join("Cargo.lock")).unwrap();
     let pkg_count = lock_text
         .lines()

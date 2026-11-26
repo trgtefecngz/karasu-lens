@@ -7,12 +7,8 @@
 /.klens/cache/
 /.klens/runs/
 
-# Local-only maintainer notes (never pushed to the public repository)
-/notes-local/
-
-# Internal AI/development design notes and extension protocol drafts (kept locally only)
+# Internal development notes (kept locally only)
 /docs/
-/extensions/
 
 # OS & editor temporary files
 .DS_Store
