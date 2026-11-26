@@ -24,8 +24,8 @@ use crate::skills::{
     SkillSelection, count_installed_skills, install_skills_into_dir, remove_klens_skills_from_dir,
 };
 use crate::text_format::{
-    FileOpOutcome, MarkerStyle, TextFormat, apply_file_delete, apply_file_write, read_text_file,
-    remove_empty_parents, remove_marked_file,
+    FileOpOutcome, MarkerStyle, TextFormat, apply_config_delete, apply_config_write,
+    read_text_file, remove_empty_parents, remove_marked_file, retry_config_edit,
 };
 
 const KLENS_MANAGED_KEY: &str = "klens_managed";
@@ -444,7 +444,27 @@ fn strip_klens_hooks_from_event_list(list: &mut Vec<Value>) -> bool {
     removed_any
 }
 
-fn upsert_claude_hooks(
+pub(super) fn upsert_claude_hooks(
+    settings_path: &Path,
+    binary_path: &Path,
+    enable_session: bool,
+    enable_pre_tool: bool,
+    dry_run: bool,
+    force: bool,
+) -> Result<FileOpOutcome, AdapterError> {
+    retry_config_edit(|| {
+        upsert_claude_hooks_once(
+            settings_path,
+            binary_path,
+            enable_session,
+            enable_pre_tool,
+            dry_run,
+            force,
+        )
+    })
+}
+
+fn upsert_claude_hooks_once(
     settings_path: &Path,
     binary_path: &Path,
     enable_session: bool,
@@ -453,6 +473,7 @@ fn upsert_claude_hooks(
     force: bool,
 ) -> Result<FileOpOutcome, AdapterError> {
     let existing = read_text_file(settings_path)?;
+    let original = existing.as_ref().map(|(_, _, bytes)| bytes.clone());
     let (fmt, mut root_map) =
         match existing {
             Some((fmt, lf, _)) => {
@@ -513,7 +534,7 @@ fn upsert_claude_hooks(
         }));
     }
     if session_list.is_empty() {
-        hooks_obj.remove("SessionStart");
+        hooks_obj.shift_remove("SessionStart");
     }
 
     // Sync optional PreToolUse hook
@@ -541,7 +562,7 @@ fn upsert_claude_hooks(
             }));
         }
         if pre_list.is_empty() {
-            hooks_obj.remove("PreToolUse");
+            hooks_obj.shift_remove("PreToolUse");
         }
     }
 
@@ -553,29 +574,30 @@ fn upsert_claude_hooks(
     })?;
     rendered.push('\n');
     let encoded = fmt.encode(&rendered);
-
-    if force && !dry_run {
-        klens_core::write_atomic(settings_path, &encoded).map_err(KlensError::from)?;
-        return Ok(FileOpOutcome::Written {
-            dry_run: false,
-            backup_path: None,
-        });
-    }
-    if force && dry_run {
-        return Ok(FileOpOutcome::Written {
-            dry_run: true,
-            backup_path: None,
-        });
-    }
-    apply_file_write(settings_path, &encoded, dry_run, false)
+    apply_config_write(
+        settings_path,
+        original.as_deref(),
+        &encoded,
+        dry_run,
+        false,
+        force,
+    )
 }
 
-fn remove_claude_hooks(
+pub(super) fn remove_claude_hooks(
     settings_path: &Path,
     dry_run: bool,
     backup_existing: bool,
 ) -> Result<FileOpOutcome, AdapterError> {
-    let Some((fmt, lf, _)) = read_text_file(settings_path)? else {
+    retry_config_edit(|| remove_claude_hooks_once(settings_path, dry_run, backup_existing))
+}
+
+fn remove_claude_hooks_once(
+    settings_path: &Path,
+    dry_run: bool,
+    backup_existing: bool,
+) -> Result<FileOpOutcome, AdapterError> {
+    let Some((fmt, lf, original)) = read_text_file(settings_path)? else {
         return Ok(FileOpOutcome::Unchanged);
     };
     if lf.trim().is_empty() {
@@ -610,10 +632,10 @@ fn remove_claude_hooks(
             }
         }
         for key in empty_events {
-            hooks_obj.remove(&key);
+            hooks_obj.shift_remove(&key);
         }
         if hooks_obj.is_empty() {
-            root_map.remove("hooks");
+            root_map.shift_remove("hooks");
         }
     }
 
@@ -622,7 +644,7 @@ fn remove_claude_hooks(
     }
 
     if root_map.is_empty() {
-        return apply_file_delete(settings_path, dry_run, backup_existing);
+        return apply_config_delete(settings_path, &original, dry_run, backup_existing);
     }
 
     let mut rendered = serde_json::to_string_pretty(&Value::Object(root_map)).map_err(|err| {
@@ -633,7 +655,14 @@ fn remove_claude_hooks(
     })?;
     rendered.push('\n');
     let encoded = fmt.encode(&rendered);
-    apply_file_write(settings_path, &encoded, dry_run, backup_existing)
+    apply_config_write(
+        settings_path,
+        Some(&original),
+        &encoded,
+        dry_run,
+        backup_existing,
+        false,
+    )
 }
 
 /// Returns `true` iff detaching klens hooks would delete `.claude/settings.json` completely

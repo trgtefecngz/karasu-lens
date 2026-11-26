@@ -1629,3 +1629,42 @@ fn memory_export_readonly_and_batch_refresh_all_http_routes() {
         assert_eq!(now_fresh.json()["envelope"]["trust"], json!("VERIFIED_RAW"));
     }
 }
+
+#[test]
+fn every_response_carries_a_strict_content_security_policy() {
+    let tmp = TempDir::new("csp");
+    let srv = TestServer::start(UiConfig {
+        port: Some(0),
+        initial_root: None,
+        read_only: true,
+        no_open: true,
+        home_dir: Some(tmp.path.join("home")),
+        ..UiConfig::default()
+    });
+
+    for path in ["/", "/app.js", "/style.css", "/api/nope"] {
+        let resp = send_http(srv.port, "GET", path, &[], None);
+        let csp = resp
+            .header("Content-Security-Policy")
+            .unwrap_or_else(|| panic!("no CSP on {path}"));
+        for directive in [
+            "default-src 'none'",
+            "script-src 'self'",
+            "connect-src 'self'",
+            "frame-ancestors 'none'",
+            "base-uri 'none'",
+            "form-action 'none'",
+        ] {
+            assert!(
+                csp.contains(directive),
+                "{path}: missing `{directive}` in {csp}"
+            );
+        }
+        assert!(!csp.contains("unsafe-eval"), "{csp}");
+        let script_src = csp
+            .split(';')
+            .find(|d| d.trim().starts_with("script-src"))
+            .unwrap();
+        assert!(!script_src.contains("unsafe-inline"), "{csp}");
+    }
+}

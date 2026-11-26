@@ -18,7 +18,8 @@ use serde_json::{Map, Value, json};
 
 use crate::error::AdapterError;
 use crate::text_format::{
-    FileOpOutcome, TextFormat, apply_file_delete, apply_file_write, read_text_file,
+    FileOpOutcome, TextFormat, apply_config_delete, apply_config_write, read_text_file,
+    retry_config_edit,
 };
 
 /// Canonical server key registered in MCP configuration files (`mcpServers.klens` / `[mcp_servers.klens]`).
@@ -203,14 +204,25 @@ pub struct McpUpsertOutcome {
 }
 
 /// Idempotently upsert `mcpServers.klens` inside a JSON config file, preserving all other
-/// top-level keys, other MCP servers, UTF-8 BOM, and CRLF/LF line endings.
+/// top-level keys (in their original order), other MCP servers, UTF-8 BOM, and CRLF/LF line
+/// endings. If the host rewrites the file mid-edit, the edit is redone on the newer content.
 pub fn upsert_json_mcp_server(
     config_path: &Path,
     binary_path: &Path,
     dry_run: bool,
     force: bool,
 ) -> Result<McpUpsertOutcome, AdapterError> {
+    retry_config_edit(|| upsert_json_mcp_server_once(config_path, binary_path, dry_run, force))
+}
+
+fn upsert_json_mcp_server_once(
+    config_path: &Path,
+    binary_path: &Path,
+    dry_run: bool,
+    force: bool,
+) -> Result<McpUpsertOutcome, AdapterError> {
     let existing = read_text_file(config_path)?;
+    let original = existing.as_ref().map(|(_, _, bytes)| bytes.clone());
     let (fmt, mut root_map) =
         match existing {
             Some((fmt, lf, _)) => {
@@ -298,20 +310,14 @@ pub fn upsert_json_mcp_server(
     rendered.push('\n');
 
     let encoded = fmt.encode(&rendered);
-    let file_outcome = if force && !dry_run {
-        klens_core::write_atomic(config_path, &encoded).map_err(klens_core::KlensError::from)?;
-        FileOpOutcome::Written {
-            dry_run: false,
-            backup_path: None,
-        }
-    } else if force && dry_run {
-        FileOpOutcome::Written {
-            dry_run: true,
-            backup_path: None,
-        }
-    } else {
-        apply_file_write(config_path, &encoded, dry_run, false)?
-    };
+    let file_outcome = apply_config_write(
+        config_path,
+        original.as_deref(),
+        &encoded,
+        dry_run,
+        false,
+        force,
+    )?;
 
     Ok(McpUpsertOutcome {
         file_outcome,
@@ -331,7 +337,18 @@ pub fn remove_json_mcp_server(
     backup_existing: bool,
     delete_if_empty: bool,
 ) -> Result<FileOpOutcome, AdapterError> {
-    let Some((fmt, lf, _)) = read_text_file(config_path)? else {
+    retry_config_edit(|| {
+        remove_json_mcp_server_once(config_path, dry_run, backup_existing, delete_if_empty)
+    })
+}
+
+fn remove_json_mcp_server_once(
+    config_path: &Path,
+    dry_run: bool,
+    backup_existing: bool,
+    delete_if_empty: bool,
+) -> Result<FileOpOutcome, AdapterError> {
+    let Some((fmt, lf, original)) = read_text_file(config_path)? else {
         return Ok(FileOpOutcome::Unchanged);
     };
     if lf.trim().is_empty() {
@@ -355,7 +372,7 @@ pub fn remove_json_mcp_server(
     let removed = root_map
         .get_mut("mcpServers")
         .and_then(Value::as_object_mut)
-        .is_some_and(|servers| servers.remove(MCP_SERVER_KEY).is_some());
+        .is_some_and(|servers| servers.shift_remove(MCP_SERVER_KEY).is_some());
 
     if !removed {
         return Ok(FileOpOutcome::Unchanged);
@@ -367,7 +384,7 @@ pub fn remove_json_mcp_server(
         .is_some_and(Map::is_empty);
 
     if delete_if_empty && servers_empty && root_map.len() == 1 {
-        return apply_file_delete(config_path, dry_run, backup_existing);
+        return apply_config_delete(config_path, &original, dry_run, backup_existing);
     }
 
     let mut rendered = serde_json::to_string_pretty(&Value::Object(root_map)).map_err(|err| {
@@ -378,300 +395,14 @@ pub fn remove_json_mcp_server(
     })?;
     rendered.push('\n');
     let encoded = fmt.encode(&rendered);
-    apply_file_write(config_path, &encoded, dry_run, backup_existing)
-}
-
-/// Inspect Codex `~/.codex/config.toml` for `[mcp_servers.klens]`.
-pub fn inspect_codex_toml_mcp(config_path: &Path) -> McpInspection {
-    let (_fmt, normalized) = match read_text_file(config_path) {
-        Ok(Some((fmt, lf, _))) => (fmt, lf),
-        Ok(None) => return McpInspection::MissingFile,
-        Err(err) => return McpInspection::CorruptConfig(err.to_string()),
-    };
-
-    if normalized.trim().is_empty() {
-        return McpInspection::NotRegistered;
-    }
-
-    let table: toml::Table = match toml::from_str(&normalized) {
-        Ok(t) => t,
-        Err(err) => return McpInspection::CorruptConfig(err.to_string()),
-    };
-
-    let Some(entry) = table
-        .get("mcp_servers")
-        .and_then(toml::Value::as_table)
-        .and_then(|servers| servers.get(MCP_SERVER_KEY))
-        .and_then(toml::Value::as_table)
-    else {
-        return McpInspection::NotRegistered;
-    };
-
-    let command = entry
-        .get("command")
-        .and_then(toml::Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let args = entry
-        .get("args")
-        .and_then(toml::Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(toml::Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
-
-    McpInspection::Registered { command, args }
-}
-
-/// Locate the byte range `[start, end)` of an explicit `[<header>]` section in normalized LF TOML
-/// text (strictly on line boundaries -> UTF-8 safe).
-///
-/// - When `include_subtables == false`, stops at ANY following `[...]` header so sibling/child
-///   tables like `[mcp_servers.klens.env]` are preserved during updates.
-/// - When `include_subtables == true`, includes `[<header>.*]` child tables so removals clean up
-///   the entire `klens` subtree.
-fn find_toml_section_span(
-    normalized_lf: &str,
-    header: &str,
-    include_subtables: bool,
-) -> Option<(usize, usize)> {
-    let mut offset = 0usize;
-    let mut section_start: Option<usize> = None;
-    let exact_header = format!("[{header}]");
-    let subtable_prefix = format!("[{header}.");
-
-    for segment in normalized_lf.split_inclusive('\n') {
-        let trimmed = segment.trim_end_matches('\n').trim();
-        let next_offset = offset + segment.len();
-
-        if let Some(start) = section_start {
-            if trimmed.starts_with('[')
-                && (!include_subtables || !trimmed.starts_with(&subtable_prefix))
-            {
-                return Some((start, offset));
-            }
-        } else if trimmed == exact_header {
-            section_start = Some(offset);
-        }
-
-        offset = next_offset;
-    }
-
-    section_start.map(|start| (start, normalized_lf.len()))
-}
-
-fn render_codex_klens_section(binary_path: &Path) -> String {
-    let cmd = toml::Value::String(clean_binary_path_string(binary_path)).to_string();
-    format!("[mcp_servers.{MCP_SERVER_KEY}]\ncommand = {cmd}\nargs = [\"mcp\"]\n")
-}
-
-/// Idempotently upsert `[mcp_servers.klens]` in Codex `config.toml`, preserving user keys,
-/// comments, UTF-8 BOM, and CRLF/LF line endings.
-pub fn upsert_codex_toml_mcp(
-    config_path: &Path,
-    binary_path: &Path,
-    dry_run: bool,
-    force: bool,
-) -> Result<McpUpsertOutcome, AdapterError> {
-    let existing = read_text_file(config_path)?;
-    let (fmt, normalized_lf) = match existing {
-        Some((fmt, lf, _)) => (fmt, lf),
-        None => (TextFormat::default(), String::new()),
-    };
-
-    let parsed: toml::Table = if normalized_lf.trim().is_empty() {
-        toml::Table::new()
-    } else {
-        toml::from_str(&normalized_lf).map_err(|err| AdapterError::InvalidTomlConfig {
-            path: config_path.to_path_buf(),
-            reason: err.to_string(),
-        })?
-    };
-
-    let existing_entry = parsed
-        .get("mcp_servers")
-        .and_then(toml::Value::as_table)
-        .and_then(|servers| servers.get(MCP_SERVER_KEY))
-        .and_then(toml::Value::as_table);
-
-    let previous_binary = existing_entry
-        .and_then(|e| e.get("command"))
-        .and_then(toml::Value::as_str)
-        .map(ToOwned::to_owned);
-
-    let args_match = existing_entry
-        .and_then(|e| e.get("args"))
-        .and_then(toml::Value::as_array)
-        .is_some_and(|arr| arr.len() == 1 && arr[0].as_str() == Some("mcp"));
-
-    let binary_same = previous_binary
-        .as_deref()
-        .is_some_and(|old| paths_equivalent(old, binary_path));
-
-    if !force && binary_same && args_match {
-        return Ok(McpUpsertOutcome {
-            file_outcome: FileOpOutcome::Unchanged,
-            previous_binary,
-            updated_binary_path: false,
-        });
-    }
-
-    let updated_binary_path = previous_binary.is_some() && !binary_same;
-    let section = render_codex_klens_section(binary_path);
-
-    let updated_lf = if let Some((start, end)) =
-        find_toml_section_span(&normalized_lf, "mcp_servers.klens", false)
-    {
-        let mut out = String::with_capacity(normalized_lf.len() + section.len());
-        out.push_str(&normalized_lf[..start]);
-        out.push_str(&section);
-        let tail = &normalized_lf[end..];
-        if !tail.is_empty() && !tail.starts_with('\n') {
-            out.push('\n');
-        }
-        out.push_str(tail);
-        out
-    } else if existing_entry.is_some() {
-        // Inline-table fallback (`[mcp_servers]\nklens = { ... }`): update cleanly via Table.
-        let mut table = parsed;
-        let servers = table
-            .entry("mcp_servers".to_string())
-            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
-        let servers_tbl =
-            servers
-                .as_table_mut()
-                .ok_or_else(|| AdapterError::InvalidTomlConfig {
-                    path: config_path.to_path_buf(),
-                    reason: "`mcp_servers` must be a TOML table".to_string(),
-                })?;
-        let mut klens_tbl = servers_tbl
-            .get(MCP_SERVER_KEY)
-            .and_then(toml::Value::as_table)
-            .cloned()
-            .unwrap_or_default();
-        klens_tbl.insert(
-            "command".to_string(),
-            toml::Value::String(clean_binary_path_string(binary_path)),
-        );
-        klens_tbl.insert(
-            "args".to_string(),
-            toml::Value::Array(vec![toml::Value::String("mcp".to_string())]),
-        );
-        servers_tbl.insert(MCP_SERVER_KEY.to_string(), toml::Value::Table(klens_tbl));
-        toml::to_string_pretty(&table).map_err(|err| AdapterError::InvalidTomlConfig {
-            path: config_path.to_path_buf(),
-            reason: err.to_string(),
-        })?
-    } else if normalized_lf.is_empty() {
-        section
-    } else {
-        let mut out = normalized_lf;
-        out.push('\n');
-        out.push_str(&section);
-        out
-    };
-
-    // Fail-closed validation: guarantee generated TOML parses cleanly before writing.
-    toml::from_str::<toml::Table>(&updated_lf).map_err(|err| AdapterError::InvalidTomlConfig {
-        path: config_path.to_path_buf(),
-        reason: format!("generated TOML failed validation: {err}"),
-    })?;
-
-    let encoded = fmt.encode(&updated_lf);
-    let file_outcome = if force && !dry_run {
-        klens_core::write_atomic(config_path, &encoded).map_err(klens_core::KlensError::from)?;
-        FileOpOutcome::Written {
-            dry_run: false,
-            backup_path: None,
-        }
-    } else if force && dry_run {
-        FileOpOutcome::Written {
-            dry_run: true,
-            backup_path: None,
-        }
-    } else {
-        apply_file_write(config_path, &encoded, dry_run, false)?
-    };
-
-    Ok(McpUpsertOutcome {
-        file_outcome,
-        previous_binary,
-        updated_binary_path,
-    })
-}
-
-/// Surgically remove `[mcp_servers.klens]` from Codex `config.toml`, preserving all other
-/// user keys, comments, UTF-8 BOM, and CRLF/LF line endings.
-pub fn remove_codex_toml_mcp(
-    config_path: &Path,
-    dry_run: bool,
-    backup_existing: bool,
-) -> Result<FileOpOutcome, AdapterError> {
-    let Some((fmt, normalized_lf, _)) = read_text_file(config_path)? else {
-        return Ok(FileOpOutcome::Unchanged);
-    };
-    if normalized_lf.trim().is_empty() {
-        return Ok(FileOpOutcome::Unchanged);
-    }
-
-    let mut table: toml::Table =
-        toml::from_str(&normalized_lf).map_err(|err| AdapterError::InvalidTomlConfig {
-            path: config_path.to_path_buf(),
-            reason: err.to_string(),
-        })?;
-
-    let has_klens = table
-        .get("mcp_servers")
-        .and_then(toml::Value::as_table)
-        .is_some_and(|servers| servers.contains_key(MCP_SERVER_KEY));
-    if !has_klens {
-        return Ok(FileOpOutcome::Unchanged);
-    }
-
-    let updated_lf = if let Some((start, end)) =
-        find_toml_section_span(&normalized_lf, "mcp_servers.klens", true)
-    {
-        let mut before = &normalized_lf[..start];
-        let mut after = &normalized_lf[end..];
-        if !before.is_empty() {
-            if let Some(stripped) = before.strip_suffix('\n') {
-                before = stripped;
-            }
-        } else if let Some(stripped) = after.strip_prefix('\n') {
-            after = stripped;
-        }
-        let mut out = String::with_capacity(before.len() + after.len());
-        out.push_str(before);
-        out.push_str(after);
-        out
-    } else {
-        if let Some(servers) = table
-            .get_mut("mcp_servers")
-            .and_then(toml::Value::as_table_mut)
-        {
-            servers.remove(MCP_SERVER_KEY);
-        }
-        toml::to_string_pretty(&table).map_err(|err| AdapterError::InvalidTomlConfig {
-            path: config_path.to_path_buf(),
-            reason: err.to_string(),
-        })?
-    };
-
-    // Validate resulting TOML before touching disk.
-    if !updated_lf.trim().is_empty() {
-        toml::from_str::<toml::Table>(&updated_lf).map_err(|err| {
-            AdapterError::InvalidTomlConfig {
-                path: config_path.to_path_buf(),
-                reason: format!("resulting TOML after removal failed validation: {err}"),
-            }
-        })?;
-    }
-
-    let encoded = fmt.encode(&updated_lf);
-    apply_file_write(config_path, &encoded, dry_run, backup_existing)
+    apply_config_write(
+        config_path,
+        Some(&original),
+        &encoded,
+        dry_run,
+        backup_existing,
+        false,
+    )
 }
 
 /// Build a standardized [`DoctorCheck`] for an MCP registration entry.

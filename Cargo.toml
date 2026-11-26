@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
 license = "LicenseRef-PolyForm-Strict-1.0.0"
 rust-version = "1.88"
@@ -24,7 +24,9 @@ clap = { version = "4.5", features = ["derive"] }
 ignore = "0.4"
 rusqlite = { version = "0.37", default-features = false, features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# `preserve_order`: host config files (e.g. `~/.claude.json`) keep the user's key order when
+# klens edits them. Enabled workspace-wide so every build sees the same `Map` behaviour.
+serde_json = { version = "1.0", features = ["preserve_order"] }
 thiserror = "2.0"
 tiny_http = { version = "0.12", default-features = false }
 toml = "0.8"

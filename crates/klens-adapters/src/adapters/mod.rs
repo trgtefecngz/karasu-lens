@@ -5,8 +5,12 @@
 pub mod antigravity;
 pub mod claude_code;
 pub mod codex;
+pub mod codex_toml;
 pub mod common;
 pub mod generic;
+
+#[cfg(test)]
+mod config_write_tests;
 
 use std::path::{Path, PathBuf};
 

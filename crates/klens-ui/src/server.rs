@@ -121,6 +121,13 @@ fn handle_single_request(state: &UiState, request: &mut Request) -> HttpResponse
     }
 }
 
+/// Defense in depth for the local dashboard: scripts and network calls only from the UI's
+/// own origin, no plugins, frames, forms or `<base>` tricks. Inline `style="..."` attributes
+/// are used by the views, so styles allow `'unsafe-inline'`; scripts never do.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; \
+    style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; \
+    font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
 fn send_response(request: Request, resp: HttpResponse) {
     let len = resp.body.len();
     let mut http_resp = Response::new(
@@ -141,6 +148,9 @@ fn send_response(request: Request, resp: HttpResponse) {
         http_resp.add_header(h);
     }
     if let Ok(h) = Header::from_bytes("Referrer-Policy", "no-referrer") {
+        http_resp.add_header(h);
+    }
+    if let Ok(h) = Header::from_bytes("Content-Security-Policy", CONTENT_SECURITY_POLICY) {
         http_resp.add_header(h);
     }
     for (k, v) in resp.extra_headers {

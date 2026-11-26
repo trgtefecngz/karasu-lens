@@ -287,7 +287,8 @@ fn resolve_binary(explicit: Option<PathBuf>) -> Result<PathBuf, CliError> {
     }
 }
 
-fn encode_json_value(value: serde_json::Value) -> Result<String, CliError> {
+fn encode_json_value(mut value: serde_json::Value) -> Result<String, CliError> {
+    value.sort_all_objects();
     let encoded = serde_json::to_string_pretty(&value).map_err(KlensError::from)?;
     Ok(encoded)
 }

@@ -171,16 +171,15 @@ impl<T> ProvenanceEnvelope<T> {
 
     /// Serialize to compact, byte-for-byte deterministic JSON.
     ///
-    /// Converts through `serde_json::Value` (whose default map is `BTreeMap`),
-    /// ensuring deterministic lexicographical object key ordering even if `T`
-    /// contains unordered maps.
+    /// Converts through `serde_json::Value` and sorts every object's keys
+    /// lexicographically, so the output is deterministic even if `T` contains
+    /// unordered maps. (`serde_json`'s `preserve_order` feature is enabled in this
+    /// workspace, so `Value` alone would keep insertion order.)
     pub fn to_deterministic_json(&self) -> Result<String, KlensError>
     where
         T: Serialize,
     {
-        self.validate()?;
-        let value = serde_json::to_value(self)?;
-        Ok(serde_json::to_string(&value)?)
+        Ok(serde_json::to_string(&self.sorted_value()?)?)
     }
 
     /// Serialize to pretty-printed, byte-for-byte deterministic JSON.
@@ -188,9 +187,17 @@ impl<T> ProvenanceEnvelope<T> {
     where
         T: Serialize,
     {
+        Ok(serde_json::to_string_pretty(&self.sorted_value()?)?)
+    }
+
+    fn sorted_value(&self) -> Result<serde_json::Value, KlensError>
+    where
+        T: Serialize,
+    {
         self.validate()?;
-        let value = serde_json::to_value(self)?;
-        Ok(serde_json::to_string_pretty(&value)?)
+        let mut value = serde_json::to_value(self)?;
+        value.sort_all_objects();
+        Ok(value)
     }
 }
 
@@ -243,6 +250,23 @@ mod tests {
         assert_eq!(parsed["trust"], "VERIFIED_AST");
         assert_eq!(parsed["redactions_count"], 1);
         assert_eq!(parsed["omissions"][0]["count"], 42);
+    }
+
+    #[test]
+    fn envelope_json_keys_are_sorted_regardless_of_payload_insertion_order() {
+        let mut payload = serde_json::Map::new();
+        payload.insert("zeta".to_string(), serde_json::json!({"z": 1, "a": 2}));
+        payload.insert("alpha".to_string(), serde_json::json!(2));
+        let env = ProvenanceEnvelope::new(TrustLevel::VerifiedAst, "proj-1", payload);
+
+        let compact = env.to_deterministic_json().unwrap();
+        let pretty = env.to_deterministic_json_pretty().unwrap();
+        for json in [&compact, &pretty] {
+            let pos = |needle: &str| json.find(needle).unwrap();
+            assert!(pos("\"alpha\"") < pos("\"zeta\""), "{json}");
+            assert!(pos("\"a\"") < pos("\"z\""), "{json}");
+            assert!(pos("\"data\"") < pos("\"trust\""), "{json}");
+        }
     }
 
     #[test]

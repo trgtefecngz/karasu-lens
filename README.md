@@ -167,8 +167,8 @@ inside a repository is ignored.
 - **No accidental whole-disk indexing.** Your home folder, its parent folders, and drive roots
   (`C:\`, `/`) are never opened as a project.
 - **Secret redaction.** Known secret formats are masked before output leaves `klens`, for example
-  private key blocks, Anthropic, OpenAI and Google API keys, GitHub tokens, AWS keys, and
-  `Bearer` tokens.
+  private key blocks, Anthropic, OpenAI and Google API keys, GitHub and GitLab tokens, AWS keys,
+  `Bearer` tokens, JWTs, Slack, Stripe and npm tokens, and passwords inside database URLs.
 - **Local UI hardening.** The dashboard binds to `127.0.0.1` only. It validates the `Host`
   header, uses an `HttpOnly` session cookie, and requires a CSRF check on every change.
 

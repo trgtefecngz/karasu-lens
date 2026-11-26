@@ -29,6 +29,11 @@ pub enum AdapterError {
     #[error("invalid TOML configuration in `{path}`: {reason}")]
     InvalidTomlConfig { path: PathBuf, reason: String },
 
+    #[error(
+        "`{path}` kept changing while klens was updating it (another program is writing it); nothing was written, run the command again"
+    )]
+    ConfigChangedDuringUpdate { path: PathBuf },
+
     #[error("refusing to uninstall without explicit `--all` confirmation flag")]
     UninstallRequiresAllFlag,
 

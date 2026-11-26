@@ -463,8 +463,8 @@ fn resolve_external_import(
             out.insert(joined);
             return;
         }
-        if let Some((_, from_ext)) = from_path.rsplit_once('.')
-            && !joined.ends_with(&format!(".{from_ext}"))
+        if let Some(from_ext) = file_ext(from_path)
+            && file_ext(&joined) != Some(from_ext)
         {
             let with_ext = format!("{joined}.{from_ext}");
             if file_set.contains(&with_ext) {
@@ -481,8 +481,8 @@ fn resolve_external_import(
         out.insert(slash_spec);
         return;
     }
-    if let Some((_, from_ext)) = from_path.rsplit_once('.')
-        && !slash_spec.ends_with(&format!(".{from_ext}"))
+    if let Some(from_ext) = file_ext(from_path)
+        && file_ext(&slash_spec) != Some(from_ext)
     {
         let with_ext = format!("{slash_spec}.{from_ext}");
         if file_set.contains(&with_ext) {
@@ -492,17 +492,11 @@ fn resolve_external_import(
     }
     if slash_spec.contains('/') {
         let suffix = format!("/{slash_spec}");
-        let suffix_stem = format!("/{slash_spec}");
         for candidate in file_set {
-            if candidate.ends_with(&suffix) {
-                out.insert(candidate.clone());
-                continue;
-            }
-            let without_ext = match candidate.rsplit_once('.') {
-                Some((prefix, _)) => prefix,
-                None => candidate.as_str(),
-            };
-            if without_ext == slash_spec || without_ext.ends_with(&suffix_stem) {
+            // The spec names the file exactly (extension included): accept as written.
+            if candidate.ends_with(&suffix)
+                || is_extensionless_source_match(from_path, candidate, &slash_spec)
+            {
                 out.insert(candidate.clone());
             }
         }
@@ -514,16 +508,59 @@ fn resolve_external_import(
     // 3. Dotted package/class specifier (e.g. Java `com.acme.Item` -> `src/main/java/com/acme/Item.java`).
     if spec.contains('.') && !spec.ends_with(".*") && !spec.contains('/') {
         let stem_path = spec.replace('.', "/");
-        let suffix_stem = format!("/{stem_path}");
         for candidate in file_set {
-            let without_ext = match candidate.rsplit_once('.') {
-                Some((prefix, _)) => prefix,
-                None => candidate.as_str(),
-            };
-            if without_ext == stem_path || without_ext.ends_with(&suffix_stem) {
+            if is_extensionless_source_match(from_path, candidate, &stem_path) {
                 out.insert(candidate.clone());
             }
         }
+    }
+}
+
+/// `candidate` without its extension is `stem_path` (or ends with `/<stem_path>`), and it is a
+/// source file of the importer's language family. This keeps `lib/invoice` from linking to
+/// `lib/invoice.md` or `lib/invoice.json`.
+fn is_extensionless_source_match(from_path: &str, candidate: &str, stem_path: &str) -> bool {
+    let Some(cand_ext) = file_ext(candidate) else {
+        return false;
+    };
+    if !same_source_family(file_ext(from_path), cand_ext) {
+        return false;
+    }
+    let without_ext = &candidate[..candidate.len() - cand_ext.len() - 1];
+    without_ext == stem_path
+        || without_ext
+            .strip_suffix(stem_path)
+            .is_some_and(|prefix| prefix.ends_with('/'))
+}
+
+/// Extensions of languages whose sources import each other without writing the extension.
+const SOURCE_FAMILIES: &[&[&str]] = &[
+    &[
+        "c", "h", "cc", "cpp", "cxx", "c++", "hpp", "hh", "hxx", "h++", "inl", "ipp", "tpp",
+    ],
+    &["java", "kt", "kts", "scala", "groovy"],
+    &["rb", "rake"],
+];
+
+fn same_source_family(from_ext: Option<&str>, cand_ext: &str) -> bool {
+    let Some(from_ext) = from_ext else {
+        return false;
+    };
+    if from_ext.eq_ignore_ascii_case(cand_ext) {
+        return true;
+    }
+    SOURCE_FAMILIES.iter().any(|family| {
+        family.iter().any(|e| e.eq_ignore_ascii_case(from_ext))
+            && family.iter().any(|e| e.eq_ignore_ascii_case(cand_ext))
+    })
+}
+
+/// Extension of the file-name part only: `a.d/notes` and `.gitignore` have none.
+fn file_ext(rel: &str) -> Option<&str> {
+    let fname = rel.rsplit('/').next().unwrap_or(rel);
+    match fname.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => Some(ext),
+        _ => None,
     }
 }
 
@@ -593,5 +630,66 @@ mod tests {
     fn expand_rust_use_paths_handles_nested_braces() {
         let expanded = expand_rust_use_paths("crate::{a, b::{c, self}}");
         assert_eq!(expanded, vec!["crate::a", "crate::b::c", "crate::b"]);
+    }
+
+    fn external(from: &str, spec: &str, files: &[&str]) -> Vec<String> {
+        let set: BTreeSet<String> = files.iter().map(|f| (*f).to_string()).collect();
+        let mut out = BTreeSet::new();
+        resolve_external_import(from, &format!("import:{spec}"), &set, &mut out);
+        out.into_iter().collect()
+    }
+
+    #[test]
+    fn extensionless_import_does_not_link_to_docs_or_data_files() {
+        let got = external(
+            "bin/main.rb",
+            "lib/invoice",
+            &[
+                "vendor/lib/invoice.rb",
+                "docs/lib/invoice.md",
+                "fixtures/lib/invoice.json",
+            ],
+        );
+        assert_eq!(got, vec!["vendor/lib/invoice.rb"]);
+    }
+
+    #[test]
+    fn dotted_class_import_does_not_link_to_docs_or_data_files() {
+        let got = external(
+            "src/main/java/com/acme/App.java",
+            "com.acme.Item",
+            &["src/main/java/com/acme/Item.java", "docs/com/acme/Item.md"],
+        );
+        assert_eq!(got, vec!["src/main/java/com/acme/Item.java"]);
+    }
+
+    #[test]
+    fn dot_in_directory_name_is_not_treated_as_extension() {
+        let got = external(
+            "bin/main.rb",
+            "lib/invoice",
+            &["vendor/lib/invoice.rb", "gems/lib/invoice.d/notes"],
+        );
+        assert_eq!(got, vec!["vendor/lib/invoice.rb"]);
+    }
+
+    #[test]
+    fn c_source_can_still_import_header_by_path_suffix() {
+        let got = external(
+            "src/main.c",
+            "util/math.h",
+            &["include/util/math.h", "docs/util/math.h.md"],
+        );
+        assert_eq!(got, vec!["include/util/math.h"]);
+    }
+
+    #[test]
+    fn php_namespace_import_resolves_to_php_class_file() {
+        let got = external(
+            "src/Http/Controller.php",
+            "App\\Models\\User",
+            &["src/App/Models/User.php", "src/App/Models/User.twig"],
+        );
+        assert_eq!(got, vec!["src/App/Models/User.php"]);
     }
 }

@@ -11,10 +11,10 @@ use klens_core::{
     KlensError,
 };
 
+use super::codex_toml::{inspect_codex_toml_mcp, remove_codex_toml_mcp, upsert_codex_toml_mcp};
 use super::common::{
     AccessScope, ConfiguredAccessEntry, McpInspection, clean_binary_path_string,
-    doctor_check_mcp_registration, inspect_codex_toml_mcp, paths_equivalent, remove_codex_toml_mcp,
-    resolve_home_dir, upsert_codex_toml_mcp,
+    doctor_check_mcp_registration, paths_equivalent, resolve_home_dir,
 };
 use crate::error::AdapterError;
 use crate::skills::{SkillSelection, render_inline_guide_block};

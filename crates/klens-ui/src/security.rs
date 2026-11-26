@@ -2,7 +2,7 @@
 //!
 //! Security guarantees (evaluated BEFORE every route handler):
 //! 1. Strict `Host` header validation (`127.0.0.1:<port>` or `localhost:<port>`) — blocks DNS rebinding.
-//! 2. Cryptographic 256-bit random session token (`generate_session_token`) handed off via
+//! 2. Random session token with 256 bits of OS entropy (`generate_session_token`) handed off via
 //!    `GET /?token=<t>` into an `HttpOnly; SameSite=Strict; Path=/` cookie with immediate URL stripping.
 //! 3. Triple CSRF gate on every mutating request (`POST`/`PUT`/`DELETE`, including `/api/shutdown`):
 //!    - Valid `Origin` header (`http://127.0.0.1:<port>` or `http://localhost:<port>`)
@@ -40,24 +40,22 @@ pub enum GuardOutcome {
     SetSessionCookieAndRedirect,
 }
 
-/// Generate a 256-bit (64 lowercase hex chars) cryptographic random session token
-/// without external heavy RNG crates or `unsafe` code.
+/// Generate a 64-hex-char (BLAKE3-256) random session token without external RNG crates or
+/// `unsafe` code.
 ///
-/// Mixes multiple fresh `std::collections::hash_map::RandomState` instances (backed by
-/// OS CSPRNG: `ProcessPrng`/`BCryptGenRandom` on Windows, `getrandom`/`/dev/urandom` on Unix),
-/// direct `/dev/urandom` bytes on Unix when available, monotonic/wall clocks, PID, and a
-/// monotonic counter through `blake3::Hasher`.
+/// Entropy: std seeds `RandomState` keys from the OS CSPRNG (`ProcessPrng` on Windows,
+/// `getrandom` on Unix) once per thread — 128 bits; later instances on the same thread only
+/// increment a counter. Keys are therefore taken from two threads (256 bits of OS entropy),
+/// plus 32 `/dev/urandom` bytes on Unix, clocks, PID and a counter, all mixed through BLAKE3.
 pub fn generate_session_token() -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"klens-ui-session-token-v1");
 
-    // Mix 8 independent OS-CSPRNG-seeded RandomState hashers (512 bits of stdlib entropy).
-    for round in 0u64..8 {
-        let state = RandomState::new();
-        let mut h = state.build_hasher();
-        h.write_u64(round);
-        hasher.update(&h.finish().to_le_bytes());
-    }
+    hasher.update(&random_state_entropy());
+    let other_thread = std::thread::spawn(random_state_entropy)
+        .join()
+        .unwrap_or_default();
+    hasher.update(&other_thread);
 
     // Mix direct OS `/dev/urandom` bytes on Unix platforms when accessible.
     #[cfg(unix)]
@@ -83,6 +81,21 @@ pub fn generate_session_token() -> String {
     hasher.update(&instant_bits.to_le_bytes());
 
     hasher.finalize().to_hex().to_string()
+}
+
+/// Two hashes from a `RandomState` built on the calling thread. The thread's OS-seeded
+/// 128-bit keys determine both outputs, so together they carry those 128 bits.
+fn random_state_entropy() -> [u8; 16] {
+    let state = RandomState::new();
+    let hash = |round: u64| {
+        let mut h = state.build_hasher();
+        h.write_u64(round);
+        h.finish().to_le_bytes()
+    };
+    let mut out = [0u8; 16];
+    out[..8].copy_from_slice(&hash(0));
+    out[8..].copy_from_slice(&hash(1));
+    out
 }
 
 /// Constant-time equality comparison for secret tokens to prevent timing side channels.

@@ -17,6 +17,9 @@ pub const DEFAULT_MAX_KEPT_RUNS: usize = 200;
 /// Relative directory where terminal run artifacts are stored inside a project.
 pub const RUNS_REL_DIR: &str = ".klens/runs";
 
+/// Contents of `.klens/runs/.gitignore`: ignore everything, including this file.
+const RUNS_GITIGNORE: &str = "# Created by klens: raw run logs are local-only.\n*\n";
+
 /// Persistent run metadata schema (`docs/02-DATA-SCHEMAS.md` §4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunMeta {
@@ -139,6 +142,7 @@ impl RunStore {
 
         let meta_json = serde_json::to_string_pretty(&meta)?;
 
+        self.ensure_runs_ignored_by_git()?;
         write_atomic(&raw_abs, record.raw_log_content.as_bytes())?;
         write_atomic(&meta_abs, meta_json.as_bytes())?;
 
@@ -226,6 +230,19 @@ impl RunStore {
         })?;
 
         Ok((meta, raw_text))
+    }
+
+    /// Raw logs are unfiltered command output and may contain secrets. A self-ignoring
+    /// `.klens/runs/.gitignore` keeps them out of commits even in projects that never ran
+    /// `klens attach`.
+    fn ensure_runs_ignored_by_git(&self) -> Result<(), ExecError> {
+        let (ignore_abs, _) = self
+            .root
+            .resolve_for_write(format!("{RUNS_REL_DIR}/.gitignore"))?;
+        if !ignore_abs.exists() {
+            write_atomic(&ignore_abs, RUNS_GITIGNORE.as_bytes())?;
+        }
+        Ok(())
     }
 
     /// Remove oldest `.meta.json` + `.raw.log` pairs beyond `self.max_kept_runs`.

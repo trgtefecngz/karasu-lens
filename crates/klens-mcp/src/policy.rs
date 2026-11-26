@@ -58,6 +58,8 @@ pub fn is_read_only_tool_call(tool_name: &str, arguments: &Value) -> bool {
 /// Rules:
 /// 1. If `config.allowed_clients` is non-empty, the connecting MCP client's `clientInfo.name`
 ///    MUST match one of the entries (case-insensitive). Missing/unknown client names are denied.
+///    The name is self-reported by the client, so this narrows which agents a project is
+///    offered to; it does not authenticate them.
 /// 2. If `config.mode == ProjectMode::Paused`, ALL tool calls are denied.
 /// 3. If `config.mode == ProjectMode::ReadOnly`, only read-only tools are permitted;
 ///    mutating/execution tools like `klens_run` are denied.

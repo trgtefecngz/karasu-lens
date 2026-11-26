@@ -57,6 +57,9 @@ pub struct ProjectConfig {
     pub schema_version: u32,
     #[serde(default)]
     pub mode: ProjectMode,
+    /// MCP clients allowed to call tools, matched against the client's self-reported
+    /// `clientInfo.name`. This is a convenience filter, not authentication: any local
+    /// program can claim any name.
     #[serde(default)]
     pub allowed_clients: Vec<String>,
     /// Additional sensitive-file glob patterns forbidden for both reading and writing.

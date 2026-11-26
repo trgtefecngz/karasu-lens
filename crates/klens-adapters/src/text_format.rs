@@ -371,6 +371,131 @@ pub fn apply_file_delete(
     })
 }
 
+/// How many times a host config edit is recomputed when the host rewrites the file mid-edit.
+pub const CONFIG_EDIT_ATTEMPTS: usize = 3;
+
+/// Run a read-modify-write `edit` again (from a fresh read) when another program changed
+/// the file in between, up to [`CONFIG_EDIT_ATTEMPTS`] times.
+pub fn retry_config_edit<T>(
+    mut edit: impl FnMut() -> Result<T, AdapterError>,
+) -> Result<T, AdapterError> {
+    for _ in 1..CONFIG_EDIT_ATTEMPTS {
+        match edit() {
+            Err(AdapterError::ConfigChangedDuringUpdate { .. }) => continue,
+            other => return other,
+        }
+    }
+    edit()
+}
+
+/// Write a host-owned config file (e.g. `~/.claude.json`) that klens edited in memory.
+///
+/// `expected_original` is the exact content the edit was computed from (`None` = the file did
+/// not exist). Host applications rewrite these files at any time; if the file no longer
+/// matches, nothing is written and [`AdapterError::ConfigChangedDuringUpdate`] is returned so
+/// the caller can redo the edit on top of the newer content instead of overwriting it.
+/// `always_write` writes even when the bytes are identical (`--force`).
+pub fn apply_config_write(
+    target: &Path,
+    expected_original: Option<&[u8]>,
+    new_bytes: &[u8],
+    dry_run: bool,
+    backup_existing: bool,
+    always_write: bool,
+) -> Result<FileOpOutcome, AdapterError> {
+    let current = read_optional_bytes(target)?;
+    ensure_unchanged(target, expected_original, current.as_deref())?;
+
+    if !always_write && current.as_deref() == Some(new_bytes) {
+        return Ok(FileOpOutcome::Unchanged);
+    }
+    let backup_path = (backup_existing && current.is_some()).then(|| backup_path_for(target));
+    if dry_run {
+        return Ok(FileOpOutcome::Written {
+            dry_run: true,
+            backup_path,
+        });
+    }
+    if let (Some(orig), Some(bak)) = (&current, &backup_path) {
+        write_atomic(bak, orig).map_err(KlensError::from)?;
+    }
+
+    before_config_commit(target);
+    let latest = read_optional_bytes(target)?;
+    ensure_unchanged(target, expected_original, latest.as_deref())?;
+    write_atomic(target, new_bytes).map_err(KlensError::from)?;
+    Ok(FileOpOutcome::Written {
+        dry_run: false,
+        backup_path,
+    })
+}
+
+/// Delete a host-owned config file, with the same "unchanged since read" guarantee as
+/// [`apply_config_write`].
+pub fn apply_config_delete(
+    target: &Path,
+    expected_original: &[u8],
+    dry_run: bool,
+    backup_existing: bool,
+) -> Result<FileOpOutcome, AdapterError> {
+    let current = read_optional_bytes(target)?;
+    ensure_unchanged(target, Some(expected_original), current.as_deref())?;
+    if !dry_run {
+        before_config_commit(target);
+        let latest = read_optional_bytes(target)?;
+        ensure_unchanged(target, Some(expected_original), latest.as_deref())?;
+    }
+    apply_file_delete(target, dry_run, backup_existing)
+}
+
+fn read_optional_bytes(path: &Path) -> Result<Option<Vec<u8>>, AdapterError> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(AdapterError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn ensure_unchanged(
+    target: &Path,
+    expected: Option<&[u8]>,
+    actual: Option<&[u8]>,
+) -> Result<(), AdapterError> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(AdapterError::ConfigChangedDuringUpdate {
+            path: target.to_path_buf(),
+        })
+    }
+}
+
+#[cfg(test)]
+pub(crate) type ConfigCommitHook = Box<dyn FnMut(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    /// Test seam: runs right before a config file is committed, to simulate a host
+    /// application writing the same file at that moment.
+    pub(crate) static BEFORE_CONFIG_COMMIT: std::cell::RefCell<Option<ConfigCommitHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn before_config_commit(target: &Path) {
+    BEFORE_CONFIG_COMMIT.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook(target);
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn before_config_commit(_target: &Path) {}
+
 /// Upsert a marked block into `target` preserving UTF-8 BOM, CRLF/LF, and user lines.
 pub fn upsert_marked_file(
     target: &Path,

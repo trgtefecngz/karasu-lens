@@ -81,7 +81,8 @@ pub(crate) fn run_stats_cmd(args: StatsArgs) -> Result<String, CliError> {
 
     let report = compute_stats(&query)?;
     if args.json {
-        let value = serde_json::to_value(&report).map_err(klens_core::KlensError::from)?;
+        let mut value = serde_json::to_value(&report).map_err(klens_core::KlensError::from)?;
+        value.sort_all_objects();
         let encoded = serde_json::to_string_pretty(&value).map_err(klens_core::KlensError::from)?;
         Ok(encoded)
     } else {

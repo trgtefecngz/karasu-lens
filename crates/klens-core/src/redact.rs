@@ -14,6 +14,12 @@ pub enum SecretKind {
     AwsSecretKey,
     GoogleApiKey,
     BearerToken,
+    Jwt,
+    SlackToken,
+    StripeKey,
+    NpmToken,
+    GitLabToken,
+    DatabasePassword,
 }
 
 impl SecretKind {
@@ -28,6 +34,12 @@ impl SecretKind {
             Self::AwsSecretKey => "[REDACTED:AWS_SECRET_KEY]",
             Self::GoogleApiKey => "[REDACTED:GOOGLE_API_KEY]",
             Self::BearerToken => "[REDACTED:BEARER_TOKEN]",
+            Self::Jwt => "[REDACTED:JWT]",
+            Self::SlackToken => "[REDACTED:SLACK_TOKEN]",
+            Self::StripeKey => "[REDACTED:STRIPE_KEY]",
+            Self::NpmToken => "[REDACTED:NPM_TOKEN]",
+            Self::GitLabToken => "[REDACTED:GITLAB_TOKEN]",
+            Self::DatabasePassword => "[REDACTED:DATABASE_PASSWORD]",
         }
     }
 }
@@ -107,6 +119,21 @@ pub fn redact_secrets(input: &str) -> RedactionResult {
                 SecretKind::BearerToken,
             );
             i = tok_end;
+            continue;
+        }
+
+        // 3b. Database connection URL password (keeps scheme, user and host).
+        if is_token_boundary(prev)
+            && let Some((pw_start, pw_end)) = match_database_url_password(input, i)
+        {
+            out.push_str(&input[i..pw_start]);
+            record_redaction(
+                &mut out,
+                &mut by_kind,
+                &mut redactions_count,
+                SecretKind::DatabasePassword,
+            );
+            i = pw_end;
             continue;
         }
 
@@ -261,7 +288,145 @@ fn match_prefixed_secret(input: &str, start: usize) -> Option<(SecretKind, usize
         }
     }
 
+    // JWT: three base64url segments, header and payload both JSON objects (`eyJ`).
+    if let Some(n) = match_jwt(rest) {
+        return Some((SecretKind::Jwt, start + n));
+    }
+
+    // Slack bot/user/app tokens.
+    for prefix in [
+        "xoxb-", "xoxp-", "xoxa-", "xoxr-", "xoxs-", "xoxe-", "xapp-",
+    ] {
+        if let Some(after) = rest.strip_prefix(prefix) {
+            let n = take_while_bytes(after, |b| b.is_ascii_alphanumeric() || b == b'-');
+            if n >= 20 && after[..n].bytes().any(|b| b.is_ascii_digit()) {
+                return Some((SecretKind::SlackToken, start + prefix.len() + n));
+            }
+        }
+    }
+
+    // Stripe live secret and restricted keys.
+    for prefix in ["sk_live_", "rk_live_"] {
+        if let Some(after) = rest.strip_prefix(prefix) {
+            let n = take_while_bytes(after, |b| b.is_ascii_alphanumeric());
+            if n >= 16 {
+                return Some((SecretKind::StripeKey, start + prefix.len() + n));
+            }
+        }
+    }
+
+    // npm access token: `npm_` + 36 alphanumerics.
+    if let Some(after) = rest.strip_prefix("npm_") {
+        let n = take_while_bytes(after, |b| b.is_ascii_alphanumeric());
+        if n == 36 && after.as_bytes().get(36).is_none_or(|b| *b != b'_') {
+            return Some((SecretKind::NpmToken, start + "npm_".len() + 36));
+        }
+    }
+
+    // GitLab personal access token.
+    if let Some(after) = rest.strip_prefix("glpat-") {
+        let n = take_while_bytes(after, |b| {
+            b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+        });
+        if n >= 20 {
+            return Some((SecretKind::GitLabToken, start + "glpat-".len() + n));
+        }
+    }
+
     None
+}
+
+fn match_jwt(rest: &str) -> Option<usize> {
+    fn segment(s: &str) -> usize {
+        take_while_bytes(s, |b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    }
+    const MIN_SEGMENT: usize = 10;
+
+    if !rest.starts_with("eyJ") {
+        return None;
+    }
+    let header = segment(rest);
+    if header < MIN_SEGMENT || rest.as_bytes().get(header) != Some(&b'.') {
+        return None;
+    }
+    let payload_start = header + 1;
+    let payload_rest = &rest[payload_start..];
+    if !payload_rest.starts_with("eyJ") {
+        return None;
+    }
+    let payload = segment(payload_rest);
+    if payload < MIN_SEGMENT || payload_rest.as_bytes().get(payload) != Some(&b'.') {
+        return None;
+    }
+    let sig_start = payload_start + payload + 1;
+    let signature = segment(&rest[sig_start..]);
+    (signature >= MIN_SEGMENT).then_some(sig_start + signature)
+}
+
+/// Connection URL schemes whose `user:password@` part is a credential.
+const DATABASE_URL_SCHEMES: &[&str] = &[
+    "postgres://",
+    "postgresql://",
+    "mysql://",
+    "mariadb://",
+    "mongodb://",
+    "mongodb+srv://",
+    "redis://",
+    "rediss://",
+    "amqp://",
+    "amqps://",
+    "mssql://",
+    "sqlserver://",
+];
+
+/// Returns the byte span of the password in `scheme://user:password@host`.
+fn match_database_url_password(input: &str, start: usize) -> Option<(usize, usize)> {
+    let rest = &input[start..];
+    let scheme_len = DATABASE_URL_SCHEMES
+        .iter()
+        .find(|scheme| {
+            rest.len() >= scheme.len()
+                && rest.as_bytes()[..scheme.len()].eq_ignore_ascii_case(scheme.as_bytes())
+        })?
+        .len();
+    let after_scheme = &rest[scheme_len..];
+    // The authority runs to the first `/` (or whitespace/quote). Its LAST `@` ends the
+    // userinfo, so a raw `@` or `#` inside the password is still fully masked.
+    let authority_len = take_while_bytes(after_scheme, |b| {
+        !b.is_ascii_whitespace() && !matches!(b, b'/' | b'"' | b'\'' | b'`')
+    });
+    let userinfo_len = after_scheme[..authority_len].rfind('@')?;
+    let userinfo = &after_scheme[..userinfo_len];
+    let colon = userinfo.find(':')?;
+    let password = &userinfo[colon + 1..];
+    if is_placeholder_password(password) {
+        return None;
+    }
+    let pw_start = start + scheme_len + colon + 1;
+    Some((pw_start, pw_start + password.len()))
+}
+
+/// Documentation-style passwords (`password`, `${DB_PASSWORD}`, `<password>`, `****`) are not
+/// secrets; masking them would only make examples harder to read.
+fn is_placeholder_password(password: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "password",
+        "pass",
+        "passwd",
+        "pwd",
+        "secret",
+        "changeme",
+        "example",
+        "yourpassword",
+        "your_password",
+        "your-password",
+    ];
+    password.is_empty()
+        || password.starts_with(['$', '<', '{', '['])
+        || password
+            .bytes()
+            .all(|b| matches!(b, b'*' | b'x' | b'X' | b'.'))
+        || WORDS.iter().any(|w| password.eq_ignore_ascii_case(w))
 }
 
 fn match_aws_secret_assignment(input: &str, start: usize) -> Option<(usize, usize)> {
@@ -476,5 +641,83 @@ impl AuthConfig {
                 .contains("AWS_SECRET_ACCESS_KEY=[REDACTED:AWS_SECRET_KEY]")
         );
         assert!(!res.text.contains("wJalrXUtnFEMI"));
+    }
+
+    #[test]
+    fn redacts_jwt_slack_stripe_npm_gitlab_and_database_url_passwords() {
+        // Synthetic test tokens assembled from dummy parts.
+        let jwt = format!(
+            "{}.{}.{}",
+            "eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTYifQ", "c2lnbmF0dXJlMTIzNDU2"
+        );
+        let slack = format!("xoxb-{}", "123456789012-1234567890123-AbCdEfGhIjKl");
+        let stripe = format!("sk_live_{}", "4eC39HqLyjWDarjtT1zdp7dc");
+        let stripe_restricted = format!("rk_live_{}", "4eC39HqLyjWDarjtT1zdp7dc");
+        let npm = format!("npm_{}", "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789");
+        let gitlab = format!("glpat-{}", "xYz123AbC456dEf789gH");
+        let db_pass = "S3cr3t-Pa55w0rd";
+        let pg = format!("postgres://app_user:{db_pass}@db.internal:5432/app");
+        let mongo = format!("MONGO_URL=\"mongodb+srv://admin:{db_pass}@cluster0.example.net/db\"");
+
+        let sample = format!(
+            "token={jwt}\nslack={slack}\nstripe={stripe}\nrk={stripe_restricted}\n//registry.npmjs.org/:_authToken={npm}\ngitlab={gitlab}\nDATABASE_URL={pg}\n{mongo}\n"
+        );
+        let res = redact_secrets(&sample);
+
+        for leaked in [
+            jwt.as_str(),
+            slack.as_str(),
+            stripe.as_str(),
+            stripe_restricted.as_str(),
+            npm.as_str(),
+            gitlab.as_str(),
+            db_pass,
+        ] {
+            assert!(!res.text.contains(leaked), "leaked {leaked}: {}", res.text);
+        }
+        assert!(res.text.contains("token=[REDACTED:JWT]"), "{}", res.text);
+        assert!(res.text.contains("slack=[REDACTED:SLACK_TOKEN]"));
+        assert!(res.text.contains("stripe=[REDACTED:STRIPE_KEY]"));
+        assert!(res.text.contains("rk=[REDACTED:STRIPE_KEY]"));
+        assert!(res.text.contains("_authToken=[REDACTED:NPM_TOKEN]"));
+        assert!(res.text.contains("gitlab=[REDACTED:GITLAB_TOKEN]"));
+        // Only the password is masked; scheme, user and host stay readable.
+        assert!(res.text.contains(
+            "DATABASE_URL=postgres://app_user:[REDACTED:DATABASE_PASSWORD]@db.internal:5432/app"
+        ));
+        assert!(res.text.contains(
+            "mongodb+srv://admin:[REDACTED:DATABASE_PASSWORD]@cluster0.example.net/db\""
+        ));
+        assert_eq!(res.redactions_count, 8);
+    }
+
+    #[test]
+    fn database_password_containing_at_sign_is_fully_masked() {
+        let res = redact_secrets("url=postgres://svc:p@ss#w0rd-9@db.local/app?x=a@b");
+        assert_eq!(
+            res.text,
+            "url=postgres://svc:[REDACTED:DATABASE_PASSWORD]@db.local/app?x=a@b"
+        );
+    }
+
+    #[test]
+    fn new_patterns_leave_ordinary_code_and_placeholders_alone() {
+        let code = r#"
+let xoxo = "hugs-and-kisses";
+let short_jwt_like = "eyJ.not.a.token";
+let jwt_doc = "eyJhbGciOi...";
+run("npm_config_cache");
+let stripe_doc = "sk_live_...";
+let gl = "glpat-short";
+const LOCAL: &str = "postgres://localhost:5432/app";
+const EXAMPLE: &str = "postgres://user:password@localhost/db";
+const TEMPLATED: &str = "mysql://root:${DB_PASSWORD}@db/app";
+const ANGLE: &str = "redis://default:<password>@cache:6379";
+const STARS: &str = "amqp://guest:****@mq/";
+let url = "https://example.com/path:with@sign";
+"#;
+        let res = redact_secrets(code);
+        assert_eq!(res.redactions_count, 0, "{}", res.text);
+        assert_eq!(res.text, code);
     }
 }
