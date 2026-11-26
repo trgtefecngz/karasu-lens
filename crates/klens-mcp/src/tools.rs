@@ -155,7 +155,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                         "items": { "type": "string" },
                         "description": "Program and args"
                     },
-                    "timeout_secs": { "type": "integer" },
+                    "timeout_secs": { "type": "integer", "description": "Default 600" },
                     "raw": { "type": "boolean" },
                     "auto_context": { "type": "boolean" },
                     "format": { "type": "string", "enum": ["text", "json"] }

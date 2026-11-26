@@ -422,16 +422,34 @@ fn parse_optional_u64(args: &Value, field: &str) -> Result<Option<u64>, McpError
     }
 }
 
+/// Default `klens_run` timeout when the agent does not pass `timeout_secs` (v0.3.3+).
+///
+/// The MCP server handles one request at a time, so a command that never exits (dev server,
+/// watcher, interactive prompt) would otherwise block every later tool call forever.
+pub(crate) const DEFAULT_MCP_RUN_TIMEOUT_SECS: u64 = 600;
+
+/// Resolve the effective `klens_run` timeout (default [`DEFAULT_MCP_RUN_TIMEOUT_SECS`]; `0` is
+/// rejected because it would kill every command instantly).
+pub(crate) fn effective_run_timeout(timeout_secs: Option<u64>) -> Result<Duration, McpError> {
+    match timeout_secs {
+        Some(0) => Err(McpError::InvalidParams(
+            "`timeout_secs` must be at least 1".to_string(),
+        )),
+        Some(secs) => Ok(Duration::from_secs(secs)),
+        None => Ok(Duration::from_secs(DEFAULT_MCP_RUN_TIMEOUT_SECS)),
+    }
+}
+
 fn handle_run(ctx: &ToolContext<'_>, args: &Value) -> Result<ToolExecution, McpError> {
     let format = parse_format(args)?;
     let command = parse_command_args(args)?;
-    let timeout_secs = parse_optional_u64(args, "timeout_secs")?;
+    let timeout = effective_run_timeout(parse_optional_u64(args, "timeout_secs")?)?;
     let raw = parse_optional_bool(args, "raw")?.unwrap_or(false);
     let auto_context = parse_optional_bool(args, "auto_context")?.unwrap_or(true);
 
     let options = RunOptions {
         cwd: Some(ctx.project_root.root().to_path_buf()),
-        timeout: timeout_secs.map(Duration::from_secs),
+        timeout: Some(timeout),
         raw,
         auto_context,
         ..RunOptions::default()
@@ -515,4 +533,25 @@ fn parse_command_args(args: &Value) -> Result<Vec<String>, McpError> {
     Err(McpError::InvalidParams(
         "`command` must be a non-empty array of strings".to_string(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn klens_run_always_has_a_timeout_and_rejects_zero() {
+        assert_eq!(
+            effective_run_timeout(None).unwrap(),
+            Duration::from_secs(DEFAULT_MCP_RUN_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            effective_run_timeout(Some(30)).unwrap(),
+            Duration::from_secs(30)
+        );
+        assert!(matches!(
+            effective_run_timeout(Some(0)),
+            Err(McpError::InvalidParams(_))
+        ));
+    }
 }

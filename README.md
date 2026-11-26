@@ -46,9 +46,13 @@ executable.
 **Terminal runs without the noise**
 - ANSI-cleaned, block-aware filtering for `cargo`, `git`, `tsc`, `jest`/`vitest`, `eslint`, `pytest`,
   `go test`, `docker`, `make`, `gradle`, and `dotnet`.
-- Error blocks are kept intact. The complete raw log is always saved and can be re-read.
+- Error blocks are kept intact. The raw log is always saved and can be re-read.
 - On failure, the relevant source lines and their enclosing function are attached automatically.
-- Git-based safety checkpoints that never touch your branch, index, or stash.
+- Runs never hang on background processes or exhaust memory. Very large output keeps its
+  head and tail, and the skipped part is reported. Agent runs time out after 10 minutes unless
+  the agent sets a different limit.
+- Git-based safety checkpoints that never touch your branch, index, or stash. Every rollback
+  first saves an automatic backup of your current work, so a rollback can always be undone.
 
 **Verifiable project memory**
 - Plain Markdown notes in `.klens/memory/`, compatible with Obsidian.

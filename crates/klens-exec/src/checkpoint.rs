@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use klens_core::{ProjectRoot, ProvenanceEnvelope, RelPath, TrustLevel};
+use klens_core::{ProjectRoot, ProvenanceEnvelope, TrustLevel};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ExecError;
@@ -42,6 +42,10 @@ pub struct RollbackReport {
     pub files_to_restore: Vec<String>,
     pub files_to_modify: Vec<String>,
     pub files_to_delete: Vec<String>,
+    /// Automatic checkpoint of the working tree saved right before an applied rollback
+    /// changed any file (v0.3.3+). Rolling back to it undoes the rollback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety_checkpoint_id: Option<String>,
 }
 
 impl RollbackReport {
@@ -100,7 +104,22 @@ pub fn create_checkpoint(
 
     let git_dir = resolve_git_dir(root)?;
     let tree_oid = snapshot_worktree_to_tree(root, &git_dir)?;
+    let info = write_checkpoint_commit(root, &tree_oid, note)?;
 
+    Ok(ProvenanceEnvelope::new(
+        TrustLevel::VerifiedRaw,
+        project_root.project_id(),
+        info,
+    ))
+}
+
+/// Commit an already-snapshotted worktree `tree_oid` under `refs/klens/checkpoints/<id>`
+/// without touching `HEAD`, the active branch, or the real index.
+fn write_checkpoint_commit(
+    root: &Path,
+    tree_oid: &str,
+    note: Option<&str>,
+) -> Result<CheckpointInfo, ExecError> {
     let clean_note = note
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -127,7 +146,7 @@ pub fn create_checkpoint(
         base_head.as_deref().unwrap_or("none")
     );
 
-    let mut commit_args: Vec<&str> = vec!["commit-tree", &tree_oid];
+    let mut commit_args: Vec<&str> = vec!["commit-tree", tree_oid];
     if let Some(ref parent) = head_full {
         commit_args.push("-p");
         commit_args.push(parent);
@@ -143,20 +162,14 @@ pub fn create_checkpoint(
     let full_ref = format!("{CHECKPOINT_REF_PREFIX}{id}");
     git_stdout(root, &["update-ref", &full_ref, &commit_oid])?;
 
-    let info = CheckpointInfo {
+    Ok(CheckpointInfo {
         id,
         commit_oid: short_oid,
         timestamp_utc,
         note: clean_note,
         branch,
         base_head,
-    };
-
-    Ok(ProvenanceEnvelope::new(
-        TrustLevel::VerifiedRaw,
-        project_root.project_id(),
-        info,
-    ))
+    })
 }
 
 /// List all checkpoints stored under `refs/klens/checkpoints/*`, sorted newest-first.
@@ -195,10 +208,13 @@ pub fn rollback_checkpoint(
     let target_tree_spec = format!("{target_ref}^{{tree}}");
     let target_tree = git_stdout(root, &["rev-parse", &target_tree_spec])?;
 
+    // `-z`: paths are emitted verbatim (never C-quoted), so names containing `"`, `\`, tabs or
+    // newlines are handled exactly (v0.3.3+).
     let diff_out = git_stdout(
         root,
         &[
             "diff",
+            "-z",
             "--name-status",
             "--no-renames",
             &current_tree,
@@ -210,22 +226,16 @@ pub fn rollback_checkpoint(
     let mut files_to_modify = Vec::new();
     let mut files_to_delete = Vec::new();
 
-    for line in diff_out.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+    let mut fields = diff_out.split('\0').filter(|f| !f.is_empty());
+    while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
+        if !is_safe_git_relative_path(path) || is_protected_klens_runtime_path(path) {
             continue;
         }
-        let Some((status, raw_path)) = trimmed.split_once('\t') else {
-            continue;
-        };
-        let norm_path = raw_path.replace('\\', "/");
-        if is_protected_klens_runtime_path(&norm_path) {
-            continue;
-        }
+        let path = path.to_string();
         match status.chars().next() {
-            Some('A') => files_to_restore.push(norm_path),
-            Some('D') => files_to_delete.push(norm_path),
-            Some(_) => files_to_modify.push(norm_path),
+            Some('A') => files_to_restore.push(path),
+            Some('D') => files_to_delete.push(path),
+            Some(_) => files_to_modify.push(path),
             None => {}
         }
     }
@@ -237,37 +247,18 @@ pub fn rollback_checkpoint(
     let has_changes =
         !files_to_restore.is_empty() || !files_to_modify.is_empty() || !files_to_delete.is_empty();
 
+    let mut safety_checkpoint_id = None;
     if !dry_run && has_changes {
-        // 1. Delete files added after the checkpoint (strictly confined inside project root).
-        for rel_str in &files_to_delete {
-            let rel = RelPath::normalize(rel_str)?;
-            let target_abs = root.join(rel.as_str());
-            if target_abs.exists()
-                && target_abs.starts_with(root)
-                && (target_abs.is_file() || target_abs.is_symlink())
-            {
-                fs::remove_file(&target_abs).map_err(|source| ExecError::Io {
-                    path: target_abs.clone(),
-                    source,
-                })?;
-                prune_empty_parents(target_abs.parent(), root);
-            }
-        }
+        // 0. Safety net (v0.3.3+): save the CURRENT working tree (incl. uncommitted edits and
+        //    new untracked files) before touching anything. Fail closed if it cannot be saved.
+        let note = format!("auto-backup before rollback to {}", target.id);
+        let safety = write_checkpoint_commit(root, &current_tree, Some(&note))?;
+        safety_checkpoint_id = Some(safety.id);
 
-        // Remove any deleted files from the real git index if they had been staged after checkpoint.
+        // 1. Restore ONLY changed/deleted files from the target tree first, via an isolated temp
+        //    index (`checkout-index -f -- <paths>`), so unchanged files keep their `mtime` and
+        //    `HEAD` / the real `.git/index` stay untouched. If this fails, nothing was deleted yet.
         const GIT_PATH_CHUNK_SIZE: usize = 64;
-        if !files_to_delete.is_empty() {
-            for chunk in files_to_delete.chunks(GIT_PATH_CHUNK_SIZE) {
-                let mut rm_args: Vec<&str> = Vec::with_capacity(chunk.len() + 4);
-                rm_args.extend(["rm", "--cached", "--ignore-unmatch", "--"]);
-                rm_args.extend(chunk.iter().map(String::as_str));
-                let _ = git_stdout(root, &rm_args);
-            }
-        }
-
-        // 2. Restore ONLY changed/deleted files from target checkpoint tree using an isolated
-        //    temp index (`checkout-index -f -- <paths>`) so unchanged files keep their `mtime`
-        //    and `HEAD` / real `.git/index` remain untouched.
         let paths_to_checkout: Vec<&str> = files_to_restore
             .iter()
             .chain(files_to_modify.iter())
@@ -285,6 +276,26 @@ pub fn rollback_checkpoint(
                 git_stdout_with_env(root, &checkout_args, &idx_env)?;
             }
         }
+
+        // 2. Delete files added after the checkpoint (confined: the parent directory must
+        //    canonicalize inside the project root, so symlinked folders cannot redirect it).
+        for rel in &files_to_delete {
+            if let Some(target_abs) = confined_delete_target(root, rel) {
+                fs::remove_file(&target_abs).map_err(|source| ExecError::Io {
+                    path: target_abs.clone(),
+                    source,
+                })?;
+                prune_empty_parents(target_abs.parent(), root);
+            }
+        }
+
+        // Remove deleted files from the real git index if they had been staged after the checkpoint.
+        for chunk in files_to_delete.chunks(GIT_PATH_CHUNK_SIZE) {
+            let mut rm_args: Vec<&str> = Vec::with_capacity(chunk.len() + 4);
+            rm_args.extend(["rm", "--cached", "--ignore-unmatch", "--"]);
+            rm_args.extend(chunk.iter().map(String::as_str));
+            let _ = git_stdout(root, &rm_args);
+        }
     }
 
     let report = RollbackReport {
@@ -295,6 +306,7 @@ pub fn rollback_checkpoint(
         files_to_restore,
         files_to_modify,
         files_to_delete,
+        safety_checkpoint_id,
     };
 
     Ok(ProvenanceEnvelope::new(
@@ -343,6 +355,11 @@ pub fn format_rollback_text(env: &ProvenanceEnvelope<RollbackReport>) -> String 
         r.checkpoint_note,
         r.total_changes()
     )];
+    if let Some(safety) = &r.safety_checkpoint_id {
+        lines.push(format!(
+            "  safety checkpoint saved before rollback: {safety} (undo with `klens rollback {safety}`)"
+        ));
+    }
     if !r.files_to_restore.is_empty() {
         lines.push(format!("  restore ({}):", r.files_to_restore.len()));
         for p in &r.files_to_restore {
@@ -517,6 +534,33 @@ fn validate_checkpoint_id(id: &str) -> Result<(), ExecError> {
         return Err(ExecError::InvalidCheckpointId(id.to_string()));
     }
     Ok(())
+}
+
+/// Git tree paths are `/`-separated and repo-relative; reject anything else defensively.
+fn is_safe_git_relative_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\0')
+        && path
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+}
+
+/// Resolve a file to delete during rollback, confined to the project root.
+///
+/// Returns `None` when the file is already gone, is a directory, or when its parent directory
+/// does not canonicalize inside `root` (e.g. a symlinked folder pointing elsewhere).
+fn confined_delete_target(root: &Path, rel: &str) -> Option<PathBuf> {
+    let candidate = root.join(rel);
+    let meta = fs::symlink_metadata(&candidate).ok()?;
+    if meta.is_dir() {
+        return None;
+    }
+    let canonical_root = fs::canonicalize(root).ok()?;
+    let canonical_parent = fs::canonicalize(candidate.parent()?).ok()?;
+    canonical_parent
+        .starts_with(&canonical_root)
+        .then_some(candidate)
 }
 
 fn is_protected_klens_runtime_path(path: &str) -> bool {

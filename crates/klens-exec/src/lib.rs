@@ -12,6 +12,7 @@
 //!   and Windows `CREATE_NO_WINDOW` (`0x08000000`) on all subprocess spawns and kills.
 
 pub mod ansi;
+pub mod capture;
 pub mod checkpoint;
 pub mod error;
 pub mod error_context;
@@ -24,6 +25,7 @@ use klens_core::{ProjectRoot, ProvenanceEnvelope, RawFallback, TrustLevel, redac
 use serde::{Deserialize, Serialize};
 
 pub use ansi::{contains_ansi, strip_ansi};
+pub use capture::DEFAULT_MAX_CAPTURE_BYTES;
 pub use checkpoint::{
     CheckpointInfo, RollbackReport, create_checkpoint, format_checkpoint_created_text,
     format_checkpoints_list_text, format_rollback_text, list_checkpoints, rollback_checkpoint,

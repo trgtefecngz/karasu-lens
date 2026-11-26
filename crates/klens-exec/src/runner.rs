@@ -2,7 +2,6 @@
 //! Windows `CREATE_NO_WINDOW` (`0x08000000`) enforcement, ANSI cleaning,
 //! secret redaction at the output gate, and raw log persistence.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -14,6 +13,9 @@ use klens_core::{
 use serde::{Deserialize, Serialize};
 
 use crate::ansi::strip_ansi;
+use crate::capture::{
+    DEFAULT_MAX_CAPTURE_BYTES, PipeCapture, effective_capture_limit, wait_for_eof,
+};
 use crate::error::ExecError;
 use crate::error_context::{
     ErrorSourceContext, collect_error_contexts, format_error_contexts_text,
@@ -27,6 +29,11 @@ pub const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Standard exit code used when a command exceeds its configured timeout.
 pub const TIMEOUT_EXIT_CODE: i32 = 124;
+
+/// After the direct child exits (or is killed), wait at most this long for its output pipes to
+/// close. A background process that inherited the pipes (dev server, build daemon) must not
+/// block the run forever.
+const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 /// Configure a `Command` so it never opens a visible console window on Windows.
 pub(crate) fn configure_no_window(cmd: &mut Command) {
@@ -56,7 +63,17 @@ pub(crate) fn kill_process_tree(pid: u32) {
     }
     #[cfg(not(windows))]
     {
-        let _ = pid;
+        // Children started with a timeout run in their own process group (pgid == pid), so the
+        // negative PID kills the whole tree, not just the direct child.
+        let mut kill_cmd = Command::new("kill");
+        kill_cmd
+            // `--` so the negative process-group id is never parsed as an option.
+            .args(["-s", "KILL", "--", &format!("-{pid}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_no_window(&mut kill_cmd);
+        let _ = kill_cmd.status();
     }
 }
 
@@ -74,6 +91,9 @@ pub struct RunOptions {
     pub auto_context: bool,
     /// Maximum historical runs to keep in `.klens/runs/`.
     pub max_kept_runs: usize,
+    /// Per-stream (stdout / stderr) capture limit in bytes. Beyond it, the head and tail are
+    /// kept and the omitted middle is reported explicitly.
+    pub max_capture_bytes: usize,
 }
 
 impl Default for RunOptions {
@@ -84,6 +104,7 @@ impl Default for RunOptions {
             raw: false,
             auto_context: true,
             max_kept_runs: DEFAULT_MAX_KEPT_RUNS,
+            max_capture_bytes: DEFAULT_MAX_CAPTURE_BYTES,
         }
     }
 }
@@ -96,6 +117,13 @@ pub struct RawProcessOutput {
     pub exit_code: i32,
     pub duration_ms: u64,
     pub timed_out: bool,
+    /// Bytes omitted from the middle of stdout because of the capture limit.
+    pub stdout_omitted_bytes: u64,
+    /// Bytes omitted from the middle of stderr because of the capture limit.
+    pub stderr_omitted_bytes: u64,
+    /// `true` when a background process kept the output pipes open after the command ended,
+    /// so capture stopped after a short grace period.
+    pub output_pipes_left_open: bool,
 }
 
 /// Optional verified bugfix note hint attached by higher layers (`klens-cli`/`klens-mcp`)
@@ -125,24 +153,39 @@ pub struct RunResponse {
 
 /// Spawn and run a subprocess directly, capturing stdout/stderr without pipe deadlock
 /// and enforcing `CREATE_NO_WINDOW` on Windows plus optional timeout + process-tree kill.
+///
+/// Uses the default per-stream capture limit ([`DEFAULT_MAX_CAPTURE_BYTES`]).
 pub fn run_process(
     program: &str,
     args: &[String],
     cwd: &Path,
     timeout: Option<Duration>,
 ) -> Result<RawProcessOutput, ExecError> {
+    run_process_with_limit(program, args, cwd, timeout, DEFAULT_MAX_CAPTURE_BYTES)
+}
+
+/// Like [`run_process`], with an explicit per-stream capture limit.
+///
+/// Never hangs on output pipes: once the direct child has exited (or was killed on timeout),
+/// capture waits at most [`PIPE_DRAIN_GRACE`] for a background process holding the pipes.
+pub fn run_process_with_limit(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    timeout: Option<Duration>,
+    max_capture_bytes: usize,
+) -> Result<RawProcessOutput, ExecError> {
     if program.trim().is_empty() {
         return Err(ExecError::EmptyCommand);
     }
 
-    let mut child = spawn_with_windows_fallback(program, args, cwd)?;
+    // With a timeout, isolate the child in its own process group (Unix) so the timeout can kill
+    // the whole tree. Without one, keep the default so terminal Ctrl+C still reaches the child.
+    let mut child = spawn_with_windows_fallback(program, args, cwd, timeout.is_some())?;
     let child_pid = child.id();
 
-    let stdout_pipe = child.stdout.take();
-    let stderr_pipe = child.stderr.take();
-
-    let stdout_handle = thread::spawn(move || read_all_bytes(stdout_pipe));
-    let stderr_handle = thread::spawn(move || read_all_bytes(stderr_pipe));
+    let stdout_capture = PipeCapture::spawn(child.stdout.take(), max_capture_bytes);
+    let stderr_capture = PipeCapture::spawn(child.stderr.take(), max_capture_bytes);
 
     let started = Instant::now();
     let mut timed_out = false;
@@ -179,16 +222,44 @@ pub fn run_process(
 
     let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
-    let stdout_bytes = stdout_handle.join().unwrap_or_default();
-    let stderr_bytes = stderr_handle.join().unwrap_or_default();
+    let all_pipes_closed = wait_for_eof(&[&stdout_capture, &stderr_capture], PIPE_DRAIN_GRACE);
+    let stdout = stdout_capture.take();
+    let stderr = stderr_capture.take();
 
     Ok(RawProcessOutput {
-        stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
+        stdout: String::from_utf8_lossy(&stdout.bytes).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr.bytes).into_owned(),
         exit_code,
         duration_ms,
         timed_out,
+        stdout_omitted_bytes: stdout.omitted_bytes,
+        stderr_omitted_bytes: stderr.omitted_bytes,
+        output_pipes_left_open: !all_pipes_closed,
     })
+}
+
+/// Honest notes (Constitution Art. 2) for capped output or pipes left open by a background
+/// process; shown in the filtered summary and attached as envelope warnings.
+fn capture_notes(raw: &RawProcessOutput, max_capture_bytes: usize) -> Vec<String> {
+    let max_capture_bytes = effective_capture_limit(max_capture_bytes);
+    let mut notes = Vec::new();
+    for (stream, omitted) in [
+        ("stdout", raw.stdout_omitted_bytes),
+        ("stderr", raw.stderr_omitted_bytes),
+    ] {
+        if omitted > 0 {
+            notes.push(format!(
+                "[klens] {stream} exceeded the {max_capture_bytes}-byte capture limit: {omitted} bytes omitted from the middle (head and tail kept)"
+            ));
+        }
+    }
+    if raw.output_pipes_left_open {
+        notes.push(format!(
+            "[klens] a background process kept the output pipe open after the command ended; capture stopped {}s later (that process may still be running)",
+            PIPE_DRAIN_GRACE.as_secs()
+        ));
+    }
+    notes
 }
 
 /// Execute a command inside `project_root`, strip ANSI before filtering & token counting,
@@ -208,8 +279,15 @@ pub fn execute_command(
         .clone()
         .unwrap_or_else(|| project_root.root().to_path_buf());
 
-    let raw_proc = run_process(program, args, &exec_cwd, options.timeout)?;
+    let raw_proc = run_process_with_limit(
+        program,
+        args,
+        &exec_cwd,
+        options.timeout,
+        options.max_capture_bytes,
+    )?;
     let raw_combined = combine_raw_output(&raw_proc.stdout, &raw_proc.stderr);
+    let notes = capture_notes(&raw_proc, options.max_capture_bytes);
 
     // Constitution Article 4 & Phase 2 §1:
     // Strip ANSI/OSC/`\r` progress bars BEFORE filtering and BEFORE token counting.
@@ -231,6 +309,19 @@ pub fn execute_command(
         } else {
             filtered.summary = format!("{timeout_note}\n{}", filtered.summary);
         }
+    }
+    let output_capped = raw_proc.stdout_omitted_bytes > 0 || raw_proc.stderr_omitted_bytes > 0;
+    if output_capped {
+        // The omitted middle may have contained error lines: never claim zero error loss.
+        filtered.truncated_errors = true;
+    }
+    if !notes.is_empty() {
+        let joined = notes.join("\n");
+        filtered.summary = if filtered.summary.is_empty() {
+            joined
+        } else {
+            format!("{joined}\n{}", filtered.summary)
+        };
     }
 
     // Apply secret redaction at the output gate (`klens-core::redact`).
@@ -290,7 +381,11 @@ pub fn execute_command(
         ProvenanceEnvelope::new(TrustLevel::VerifiedRaw, project_root.project_id(), response)
             .with_redactions_count(total_redactions)
             .with_raw_fallback(RawFallback {
-                reason: "complete unfiltered terminal output saved on disk".to_string(),
+                reason: if output_capped {
+                    "unfiltered terminal output saved on disk (middle omitted by the capture limit; head and tail kept)".to_string()
+                } else {
+                    "complete unfiltered terminal output saved on disk".to_string()
+                },
                 path: Some(raw_log_path),
                 hint: Some("re-read verbatim with `klens runs show <run_id> --raw`".to_string()),
             });
@@ -308,6 +403,9 @@ pub fn execute_command(
             "command timed out after {}ms and process tree was terminated",
             raw_proc.duration_ms
         ));
+    }
+    for note in notes {
+        envelope = envelope.with_warning(note.trim_start_matches("[klens] ").to_string());
     }
 
     Ok(envelope)
@@ -362,6 +460,14 @@ pub fn format_run_text(envelope: &ProvenanceEnvelope<RunResponse>) -> String {
         text.push_str(&format_error_contexts_text(&data.error_contexts));
     }
 
+    // Raw mode returns the unfiltered output, so capture notes (capped output, pipes held open
+    // by a background process) are not in it; surface them explicitly (Constitution Art. 2).
+    if data.raw_mode {
+        for warning in &envelope.warnings {
+            text.push_str(&format!("\n[klens] warning: {warning}"));
+        }
+    }
+
     text
 }
 
@@ -369,6 +475,7 @@ fn spawn_with_windows_fallback(
     program: &str,
     args: &[String],
     cwd: &Path,
+    own_process_group: bool,
 ) -> Result<std::process::Child, ExecError> {
     let mut cmd = Command::new(program);
     cmd.args(args)
@@ -377,6 +484,17 @@ fn spawn_with_windows_fallback(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     configure_no_window(&mut cmd);
+    #[cfg(unix)]
+    {
+        if own_process_group {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = own_process_group;
+    }
 
     match cmd.spawn() {
         Ok(child) => Ok(child),
@@ -425,14 +543,6 @@ fn resolve_windows_script_in_path(program: &str) -> Option<PathBuf> {
         }
     }
     None
-}
-
-fn read_all_bytes<R: Read>(mut reader: Option<R>) -> Vec<u8> {
-    let mut buf = Vec::new();
-    if let Some(ref mut r) = reader {
-        let _ = r.read_to_end(&mut buf);
-    }
-    buf
 }
 
 fn format_meta_cwd(project_root: &ProjectRoot, exec_cwd: &Path) -> String {
