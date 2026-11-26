@@ -175,3 +175,72 @@ fn paths_that_git_would_quote_are_rolled_back_exactly() {
     assert_eq!(repo.read("keep\"quote.txt"), "original\n");
     assert!(!repo.path().join("added\\back\"slash.txt").exists());
 }
+
+/// A project can be a sub-folder of a larger git repository (monorepo). Rollback must work
+/// there and must never touch files outside the project folder.
+#[test]
+fn rollback_in_a_repository_subfolder_restores_only_that_folder() {
+    let repo = Repo::new("subdir");
+    repo.write("app/src/f.txt", "v1\n");
+    repo.write("other/g.txt", "sibling v1\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "init"]);
+
+    let root = ProjectRoot::new(repo.path().join("app")).unwrap();
+    let baseline = create_checkpoint(&root, Some("baseline")).unwrap();
+
+    repo.write("app/src/f.txt", "v2\n");
+    repo.write("app/new.txt", "added later\n");
+    repo.write("other/g.txt", "sibling v2 (outside the project)\n");
+
+    let applied = rollback_checkpoint(&root, &baseline.data.id, false).unwrap();
+
+    assert_eq!(applied.data.files_to_modify, vec!["src/f.txt".to_string()]);
+    assert_eq!(applied.data.files_to_delete, vec!["new.txt".to_string()]);
+    assert_eq!(repo.read("app/src/f.txt"), "v1\n");
+    assert!(!repo.path().join("app/new.txt").exists());
+    assert_eq!(
+        repo.read("other/g.txt"),
+        "sibling v2 (outside the project)\n",
+        "rollback changed a file outside the project folder"
+    );
+}
+
+/// Checkpoints are git objects that travel with `git bundle --all`, mirrors and backups:
+/// credential files must never be stored in them, and rollback must never rewrite them.
+#[test]
+fn checkpoints_never_store_or_restore_credential_files() {
+    let repo = Repo::new("sensitive");
+    repo.write("src/app.txt", "v1\n");
+    repo.write(".env", "API_KEY=first\n");
+    repo.write(".ssh/id_ed25519", "PRIVATE KEY v1\n");
+    repo.git(&["add", "src/app.txt"]);
+    repo.git(&["commit", "-m", "init"]);
+
+    let root = ProjectRoot::new(repo.path()).unwrap();
+    let baseline = create_checkpoint(&root, Some("baseline")).unwrap();
+
+    let out = Command::new("git")
+        .args([
+            "ls-tree",
+            "-r",
+            "--name-only",
+            &format!("refs/klens/checkpoints/{}", baseline.data.id),
+        ])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    let stored = String::from_utf8_lossy(&out.stdout);
+    assert!(stored.contains("src/app.txt"), "{stored}");
+    assert!(!stored.contains(".env"), "credential file stored: {stored}");
+    assert!(
+        !stored.contains("id_ed25519"),
+        "credential file stored: {stored}"
+    );
+
+    repo.write("src/app.txt", "v2\n");
+    repo.write(".env", "API_KEY=second\n");
+    rollback_checkpoint(&root, &baseline.data.id, false).unwrap();
+    assert_eq!(repo.read("src/app.txt"), "v1\n");
+    assert_eq!(repo.read(".env"), "API_KEY=second\n");
+}

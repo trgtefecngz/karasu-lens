@@ -414,7 +414,7 @@ pub fn format_outline_text(envelope: &ProvenanceEnvelope<OutlinePayload>) -> Str
     );
 
     for warning in &envelope.warnings {
-        let _ = writeln!(out, "WARNING: {warning}");
+        let _ = writeln!(out, "WARNING: {}", klens_core::redact_secrets(warning).text);
     }
 
     for file in &envelope.data.files {

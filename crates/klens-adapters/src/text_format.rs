@@ -320,7 +320,7 @@ pub fn apply_file_write(
     }
 
     if let (Some(orig), Some(bak)) = (&existing_bytes, &backup_path) {
-        write_atomic(bak, orig).map_err(KlensError::from)?;
+        klens_core::write_atomic_with_mode_of(bak, orig, target).map_err(KlensError::from)?;
     }
 
     write_atomic(target, new_bytes).map_err(KlensError::from)?;
@@ -358,7 +358,7 @@ pub fn apply_file_delete(
             path: target.to_path_buf(),
             source,
         })?;
-        write_atomic(bak, &orig).map_err(KlensError::from)?;
+        klens_core::write_atomic_with_mode_of(bak, &orig, target).map_err(KlensError::from)?;
     }
 
     fs::remove_file(target).map_err(|source| AdapterError::Io {
@@ -417,7 +417,7 @@ pub fn apply_config_write(
         });
     }
     if let (Some(orig), Some(bak)) = (&current, &backup_path) {
-        write_atomic(bak, orig).map_err(KlensError::from)?;
+        klens_core::write_atomic_with_mode_of(bak, orig, target).map_err(KlensError::from)?;
     }
 
     before_config_commit(target);

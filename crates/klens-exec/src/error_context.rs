@@ -329,10 +329,32 @@ fn normalize_candidate_to_rel_path(project_root: &ProjectRoot, raw_path: &str) -
 
     // Fallback for symlinked temp directories (e.g. macOS `/var` -> `/private/var`)
     // or Windows 8.3 short paths: canonicalize and verify containment under `project_root.root()`.
+    // Tool output is untrusted: only plain local paths may reach the filesystem. Network
+    // shares (`\\host\share`, `//host/share`, `\\?\UNC\...`) and device paths (`\\.\`) would
+    // make Windows open an SMB connection (credential hash leak, ~20 s stall per path).
+    if !is_plain_local_absolute(trimmed) {
+        return None;
+    }
     let canon = fs::canonicalize(Path::new(trimmed)).ok()?;
     let stripped = canon.strip_prefix(project_root.root()).ok()?;
     let rel = RelPath::from_relative_path(stripped).ok()?;
     Some(rel.as_str().to_string())
+}
+
+/// `C:\x`, `C:/x`, `\\?\C:\x` or (non-Windows) `/x`; never a UNC, device or doubled-slash path.
+fn is_plain_local_absolute(path: &str) -> bool {
+    let unverbatim = path
+        .strip_prefix(r"\\?\")
+        .or_else(|| path.strip_prefix("//?/"))
+        .unwrap_or(path);
+    if has_windows_drive_prefix(unverbatim) {
+        return true;
+    }
+    let starts_doubled = unverbatim.starts_with(r"\\")
+        || unverbatim.starts_with("//")
+        || unverbatim.starts_with(r"\/")
+        || unverbatim.starts_with(r"/\");
+    !cfg!(windows) && unverbatim.starts_with('/') && !starts_doubled
 }
 
 fn strip_win_verbatim(s: &str) -> &str {

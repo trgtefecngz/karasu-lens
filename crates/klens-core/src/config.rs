@@ -10,6 +10,27 @@ use crate::paths::{
     DEFAULT_SENSITIVE_PATTERNS, RelPath, is_sensitive_path_with_extra, matches_any_pattern,
     write_atomic,
 };
+use crate::redact::redact_secrets;
+
+/// One-line description of a TOML parse error: `line L, column C: <message>`.
+///
+/// `toml`'s own `Display` quotes the offending source line, and serde type errors quote the
+/// value. Either can be a credential (a broken `settings.toml`, a repository-supplied
+/// `.klens/config.toml`), and these messages reach CLI, MCP and UI output, so the source line
+/// is never included and the message is passed through [`redact_secrets`].
+pub fn describe_toml_error(err: &toml::de::Error, source: &str) -> String {
+    let message = redact_secrets(err.message().trim()).text;
+    let message = message.lines().next().unwrap_or_default();
+    match err.span() {
+        Some(span) => {
+            let before = &source[..span.start.min(source.len())];
+            let line = before.matches('\n').count() + 1;
+            let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+            format!("line {line}, column {column}: {message}")
+        }
+        None => message.to_string(),
+    }
+}
 
 const fn default_schema_version() -> u32 {
     SCHEMA_VERSION
@@ -89,7 +110,8 @@ impl ProjectConfig {
     /// Load and validate a `.klens/config.toml` file.
     pub fn load(path: &Path) -> Result<Self, KlensError> {
         let raw = fs::read_to_string(path)?;
-        let cfg: Self = toml::from_str(&raw)?;
+        let cfg: Self = toml::from_str(&raw)
+            .map_err(|err| KlensError::ConfigParse(describe_toml_error(&err, &raw)))?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -197,7 +219,8 @@ impl GlobalConfig {
     /// Load and validate a `~/.klens/config.toml` file.
     pub fn load(path: &Path) -> Result<Self, KlensError> {
         let raw = fs::read_to_string(path)?;
-        let cfg: Self = toml::from_str(&raw)?;
+        let cfg: Self = toml::from_str(&raw)
+            .map_err(|err| KlensError::ConfigParse(describe_toml_error(&err, &raw)))?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -311,5 +334,33 @@ mod tests {
                 found: 2
             })
         ));
+    }
+
+    #[test]
+    fn parse_errors_never_echo_the_offending_source_line() {
+        let dir = std::env::temp_dir().join(format!("klens-cfg-err-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let secret = format!("AKIA{}", "ABCDEFGHIJKLMNOP");
+        std::fs::write(
+            &path,
+            format!("mode = \"active\"\naws_access_key_id = {secret}\n"),
+        )
+        .unwrap();
+
+        let err = ProjectConfig::load(&path).unwrap_err().to_string();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(!err.contains(&secret), "{err}");
+        assert!(err.contains("line 2"), "{err}");
+    }
+
+    #[test]
+    fn type_errors_mask_secret_values() {
+        let secret = format!("ghp_{}", "1234567890abcdefghij1234567890abcdef");
+        let source = format!("mode = \"{secret}\"\n");
+        let err = toml::from_str::<ProjectConfig>(&source).unwrap_err();
+        let described = describe_toml_error(&err, &source);
+        assert!(!described.contains(&secret), "{described}");
     }
 }

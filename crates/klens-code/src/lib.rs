@@ -7,6 +7,7 @@
 
 pub mod deps;
 pub mod diff_check;
+mod diff_parse;
 pub mod error;
 pub mod find;
 mod git;

@@ -140,6 +140,7 @@ impl ClaudeCodeAdapter {
         ctx: &AdapterContext,
         backup_existing: bool,
     ) -> Result<InstallReport, AdapterError> {
+        ensure_project_claude_dir_is_real(&ctx.project_root)?;
         let mut files_touched = Vec::new();
         let mut notes = Vec::new();
         let mut mutated = false;
@@ -269,6 +270,7 @@ impl HostAdapter for ClaudeCodeAdapter {
     }
 
     fn install_or_update(&self, ctx: &AdapterContext) -> Result<InstallReport, KlensError> {
+        ensure_project_claude_dir_is_real(&ctx.project_root)?;
         let mut files_touched = Vec::new();
         let mut notes = Vec::new();
         let mut mutated = false;
@@ -442,6 +444,16 @@ fn strip_klens_hooks_from_event_list(list: &mut Vec<Value>) -> bool {
         true
     });
     removed_any
+}
+
+/// The project's `.claude` folders must be real folders: writing hooks or skills through a
+/// linked `.claude` would change files outside the project (for example the user's global
+/// `~/.claude`). The user's own global `~/.claude` may be a link and is not checked here.
+fn ensure_project_claude_dir_is_real(project_root: &Path) -> Result<(), AdapterError> {
+    match klens_core::first_linked_component(project_root, ".claude/skills/karasu-lens") {
+        Some(path) => Err(AdapterError::LinkedProjectPath { path }),
+        None => Ok(()),
+    }
 }
 
 pub(super) fn upsert_claude_hooks(

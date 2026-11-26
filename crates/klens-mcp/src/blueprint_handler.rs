@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use klens_blueprint::{
     Blueprint, BubbleStatus, ContractSummary, DEFAULT_HANDOFF_BUDGET_TOKENS, FailedRunSummary,
@@ -367,18 +367,11 @@ fn collect_git_summary(root: &Path) -> Option<GitStatusSummary> {
 }
 
 fn run_git_stdout(root: &Path, args: &[&str]) -> Option<String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = klens_core::git_command(root);
     cmd.args(args)
-        .current_dir(root)
-        .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(klens_exec::WINDOWS_CREATE_NO_WINDOW);
-    }
     let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;

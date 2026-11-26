@@ -176,3 +176,53 @@ fn non_git_directory_fails_closed_and_writes_zero_files() {
 
     assert!(fs::read_dir(&sb.project).unwrap().next().is_none());
 }
+
+fn git_config(dir: &Path, key: &str, value: &str) {
+    let out = Command::new("git")
+        .args(["config", key, value])
+        .current_dir(dir)
+        .output()
+        .expect("git config");
+    assert!(out.status.success());
+}
+
+#[test]
+fn repository_hooks_path_inside_the_repo_is_honoured() {
+    let sb = HookSandbox::new("hookspath-inside");
+    init_git_repo(&sb.project);
+    git_config(&sb.project, "core.hooksPath", ".githooks");
+    let bin = sb.home.join("klens.exe");
+
+    install_pre_commit_hook(&sb.project, &bin, false, false).unwrap();
+
+    assert!(sb.project.join(".githooks").join("pre-commit").is_file());
+    assert!(
+        !sb.project
+            .join(".git")
+            .join("hooks")
+            .join("pre-commit")
+            .exists()
+    );
+}
+
+#[test]
+fn repository_hooks_path_outside_the_repo_is_refused() {
+    let sb = HookSandbox::new("hookspath-outside");
+    init_git_repo(&sb.project);
+    let outside = sb.root.join("elsewhere");
+    fs::create_dir_all(&outside).unwrap();
+    git_config(
+        &sb.project,
+        "core.hooksPath",
+        &outside.display().to_string().replace('\\', "/"),
+    );
+    let bin = sb.home.join("klens.exe");
+
+    let err = install_pre_commit_hook(&sb.project, &bin, false, false).unwrap_err();
+
+    assert!(
+        matches!(err, AdapterError::UntrustedHooksPath { .. }),
+        "{err:?}"
+    );
+    assert!(!outside.join("pre-commit").exists());
+}

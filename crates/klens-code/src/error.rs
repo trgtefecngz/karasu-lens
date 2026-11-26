@@ -45,4 +45,13 @@ pub enum CodeError {
 
     #[error("file is binary and cannot be read as UTF-8 source: {0}")]
     BinaryFile(String),
+
+    #[error(
+        "file `{path}` is {bytes} bytes, over the {limit}-byte read limit; use `klens run` with a tool like `head`/`Select-String` or read a smaller file"
+    )]
+    FileTooLarge {
+        path: String,
+        bytes: u64,
+        limit: u64,
+    },
 }

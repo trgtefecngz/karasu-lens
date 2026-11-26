@@ -23,15 +23,36 @@ pub(crate) struct Layer1Aggregate {
     pub stale_memories_caught: u64,
 }
 
+/// Size at which `metrics.jsonl` is rotated to `metrics.jsonl.1` (the previous `.1` is replaced).
+pub const MAX_METRICS_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Longest stored value for client-supplied text fields (`clientInfo.name` etc.).
+pub const MAX_METRIC_FIELD_CHARS: usize = 128;
+
 /// Append a single Layer 1 [`MetricEvent`] as one compact JSON line to `metrics_path`.
+///
+/// Client-supplied names are capped at [`MAX_METRIC_FIELD_CHARS`] and the file is rotated at
+/// [`MAX_METRICS_FILE_BYTES`], so a misbehaving MCP client cannot grow it without bound.
 pub fn append_metric_event(metrics_path: &Path, event: &MetricEvent) -> Result<(), KlensError> {
     if let Some(parent) = metrics_path.parent()
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent)?;
     }
+    if fs::metadata(metrics_path).is_ok_and(|m| m.len() > MAX_METRICS_FILE_BYTES) {
+        let mut rotated = metrics_path.as_os_str().to_os_string();
+        rotated.push(".1");
+        fs::rename(metrics_path, rotated)?;
+    }
 
-    let mut line = serde_json::to_string(event)?;
+    let cap = |s: &str| s.chars().take(MAX_METRIC_FIELD_CHARS).collect::<String>();
+    let mut event = event.clone();
+    event.client_name = cap(&event.client_name);
+    event.client_version = cap(&event.client_version);
+    event.tool = cap(&event.tool);
+    event.project_name = event.project_name.as_deref().map(cap);
+
+    let mut line = serde_json::to_string(&event)?;
     line.push('\n');
 
     let mut file = OpenOptions::new()
@@ -150,4 +171,45 @@ fn matches_project_filter(
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(client: &str) -> MetricEvent {
+        MetricEvent::new(
+            "2026-11-26T12:00:00Z",
+            "proj",
+            None,
+            client,
+            "1",
+            "klens_read",
+            10,
+            5,
+            false,
+        )
+    }
+
+    #[test]
+    fn client_supplied_names_are_capped_and_file_rotates() {
+        let dir = std::env::temp_dir().join(format!("klens-metrics-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("metrics.jsonl");
+
+        append_metric_event(&path, &event(&"x".repeat(100_000))).unwrap();
+        let line_len = fs::metadata(&path).unwrap().len();
+
+        let big = usize::try_from(MAX_METRICS_FILE_BYTES).unwrap() + 1;
+        fs::write(&path, "y".repeat(big)).unwrap();
+        append_metric_event(&path, &event("claude-code")).unwrap();
+        let after = fs::metadata(&path).unwrap().len();
+        let rotated = dir.join("metrics.jsonl.1").is_file();
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(line_len < 1_000, "stored line is {line_len} bytes");
+        assert!(rotated, "old file was not rotated");
+        assert!(after < 1_000, "file kept growing: {after} bytes");
+    }
 }

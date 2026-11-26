@@ -480,3 +480,32 @@ fn runner_skips_auto_context_on_success_raw_or_disabled_and_formats_text() {
     assert!(rendered.contains("> L8| let demo = line 8"));
     assert_eq!(format_error_contexts_text(&[]), "");
 }
+
+/// Tool output is untrusted text. Network-share paths in it (`\host\share\x.rs:1`) must never
+/// be opened: on Windows that starts an SMB connection (credential hash sent to the host) and
+/// stalls the run for ~20 s per path.
+#[test]
+fn network_share_paths_in_output_are_never_opened() {
+    let sb = Sandbox::new("unc");
+    sb.write("src/lib.rs", "fn a() {}\nfn b() {}\n");
+    let root = ProjectRoot::new(sb.path()).unwrap();
+    let abs_lib = root.root().join("src").join("lib.rs");
+    let output = format!(
+        "{}\n{}\n{}\nerror: {}:2:1\n",
+        r"error: \\10.255.255.1\share\x.rs:1:1",
+        "error: //10.255.255.2/share/y.rs:2:1",
+        r"error: \\?\UNC\10.255.255.3\share\z.rs:3:1",
+        abs_lib.display()
+    );
+
+    let started = std::time::Instant::now();
+    let res = collect_error_contexts(&root, &output);
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "network paths were probed: took {elapsed:?}"
+    );
+    assert_eq!(res.contexts.len(), 1, "{:?}", res.contexts);
+    assert_eq!(res.contexts[0].path, "src/lib.rs");
+}

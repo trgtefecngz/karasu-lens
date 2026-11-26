@@ -20,6 +20,7 @@ pub enum SecretKind {
     NpmToken,
     GitLabToken,
     DatabasePassword,
+    UrlPassword,
 }
 
 impl SecretKind {
@@ -40,6 +41,7 @@ impl SecretKind {
             Self::NpmToken => "[REDACTED:NPM_TOKEN]",
             Self::GitLabToken => "[REDACTED:GITLAB_TOKEN]",
             Self::DatabasePassword => "[REDACTED:DATABASE_PASSWORD]",
+            Self::UrlPassword => "[REDACTED:URL_PASSWORD]",
         }
     }
 }
@@ -122,17 +124,12 @@ pub fn redact_secrets(input: &str) -> RedactionResult {
             continue;
         }
 
-        // 3b. Database connection URL password (keeps scheme, user and host).
+        // 3b. Password inside a connection/remote URL (keeps scheme, user and host).
         if is_token_boundary(prev)
-            && let Some((pw_start, pw_end)) = match_database_url_secret(input, i)
+            && let Some((kind, pw_start, pw_end)) = match_url_userinfo_secret(input, i)
         {
             out.push_str(&input[i..pw_start]);
-            record_redaction(
-                &mut out,
-                &mut by_kind,
-                &mut redactions_count,
-                SecretKind::DatabasePassword,
-            );
+            record_redaction(&mut out, &mut by_kind, &mut redactions_count, kind);
             i = pw_end;
             continue;
         }
@@ -379,16 +376,31 @@ const DATABASE_URL_SCHEMES: &[&str] = &[
     "sqlserver://",
 ];
 
-/// Returns the byte span of the password in `scheme://user:password@host`.
-fn match_database_url_secret(input: &str, start: usize) -> Option<(usize, usize)> {
+/// Web/remote URL schemes whose `user:password@` part is a credential (git remotes in
+/// `.git/config`, CI clone URLs, `pip`/`npm` registry URLs).
+const WEB_URL_SCHEMES: &[&str] = &["https://", "http://", "ssh://", "ftp://", "ftps://"];
+
+/// Returns the kind and byte span of the password in `scheme://user:password@host`.
+fn match_url_userinfo_secret(input: &str, start: usize) -> Option<(SecretKind, usize, usize)> {
     let rest = &input[start..];
-    let scheme_len = DATABASE_URL_SCHEMES
-        .iter()
-        .find(|scheme| {
-            rest.len() >= scheme.len()
-                && rest.as_bytes()[..scheme.len()].eq_ignore_ascii_case(scheme.as_bytes())
-        })?
-        .len();
+    let has_scheme = |scheme: &&&str| {
+        rest.len() >= scheme.len()
+            && rest.as_bytes()[..scheme.len()].eq_ignore_ascii_case(scheme.as_bytes())
+    };
+    let (kind, scheme_len) = if let Some(s) = DATABASE_URL_SCHEMES.iter().find(has_scheme) {
+        (SecretKind::DatabasePassword, s.len())
+    } else {
+        (
+            SecretKind::UrlPassword,
+            WEB_URL_SCHEMES.iter().find(has_scheme)?.len(),
+        )
+    };
+    let (pw_start, pw_end) = userinfo_secret_span(rest, scheme_len)?;
+    Some((kind, start + pw_start, start + pw_end))
+}
+
+/// Span (relative to `rest`) of the password after `scheme_len` bytes of scheme.
+fn userinfo_secret_span(rest: &str, scheme_len: usize) -> Option<(usize, usize)> {
     let after_scheme = &rest[scheme_len..];
     // The authority runs to the first `/` (or whitespace/quote). Its LAST `@` ends the
     // userinfo, so a raw `@` or `#` inside the password is still fully masked.
@@ -402,7 +414,7 @@ fn match_database_url_secret(input: &str, start: usize) -> Option<(usize, usize)
     if is_documentation_placeholder(secret_part) {
         return None;
     }
-    let pw_start = start + scheme_len + colon + 1;
+    let pw_start = scheme_len + colon + 1;
     Some((pw_start, pw_start + secret_part.len()))
 }
 
@@ -689,6 +701,25 @@ impl AuthConfig {
             "mongodb+srv://admin:[REDACTED:DATABASE_PASSWORD]@cluster0.example.net/db\""
         ));
         assert_eq!(res.redactions_count, 8);
+    }
+
+    #[test]
+    fn web_url_credentials_are_masked() {
+        let pass = format!("hunter{}", "2pass");
+        let input = format!(
+            "url = https://user:{pass}@github.com/x/y.git\nother = ssh://git:{pass}@host/repo\n"
+        );
+        let res = redact_secrets(&input);
+        assert!(!res.text.contains(&pass), "{}", res.text);
+        assert!(
+            res.text
+                .contains("https://user:[REDACTED:URL_PASSWORD]@github.com/x/y.git")
+        );
+        assert_eq!(res.redactions_count, 2);
+
+        // Ordinary URLs (ports, paths with `@`, placeholders) are untouched.
+        let plain = "https://example.com:8080/a@b https://user:password@host http://x.y/";
+        assert_eq!(redact_secrets(plain).text, plain);
     }
 
     #[test]

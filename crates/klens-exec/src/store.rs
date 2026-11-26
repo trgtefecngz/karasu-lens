@@ -127,7 +127,9 @@ impl RunStore {
             schema_version: SCHEMA_VERSION,
             run_id: run_id.to_string(),
             timestamp_utc: timestamp_utc.to_string(),
-            command: record.command.to_string(),
+            // Shown by `klens runs`, the UI and handoffs: never keep a token typed on the
+            // command line (`--token ghp_...`, `-H "Authorization: Bearer ..."`).
+            command: klens_core::redact_secrets(record.command).text,
             cwd: record.cwd.to_string(),
             filter_used: record.filter_used.to_string(),
             exit_code: record.exit_code,

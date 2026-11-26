@@ -10,7 +10,8 @@
 //! `docs/aws-setup.md`) stay readable.
 
 /// Directory names whose entire contents are treated as credential material.
-pub const SENSITIVE_DIR_NAMES: &[&str] = &[".ssh", ".aws", ".gnupg", ".kube"];
+/// `.git` holds remote URLs with embedded credentials, hooks and repository config.
+pub const SENSITIVE_DIR_NAMES: &[&str] = &[".ssh", ".aws", ".gnupg", ".kube", ".git"];
 
 /// Exact file names (case-insensitive).
 pub const SENSITIVE_FILE_NAMES: &[&str] = &[
@@ -63,6 +64,7 @@ pub const BUILTIN_SENSITIVE_PATTERNS: &[&str] = &[
     ".aws/**",
     ".gnupg/**",
     ".kube/**",
+    ".git/**",
     ".docker/config.json",
     ".codex/auth.json",
     "gh/hosts.yml",
@@ -133,6 +135,26 @@ mod tests {
             "kube/deployment.yaml",
             "docker/config.json",
             "my-gh/hosts.yml",
+        ] {
+            assert!(!is_builtin_sensitive(rel), "`{rel}` must stay readable");
+        }
+    }
+
+    #[test]
+    fn git_internals_are_sensitive_but_git_dotfiles_are_not() {
+        for rel in [
+            ".git/config",
+            ".git/hooks/pre-commit",
+            "sub/.git/config",
+            ".GIT/config",
+        ] {
+            assert!(is_builtin_sensitive(rel), "`{rel}` must be blocked");
+        }
+        for rel in [
+            ".gitignore",
+            ".gitattributes",
+            ".github/workflows/ci.yml",
+            "git/config",
         ] {
             assert!(!is_builtin_sensitive(rel), "`{rel}` must stay readable");
         }

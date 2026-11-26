@@ -171,6 +171,7 @@ pub fn extract_file_imports(
     if !meta.is_file() {
         return Err(CodeError::NotAFile(canonical_rel.as_str().to_string()));
     }
+    crate::read::ensure_readable_size(canonical_rel.as_str(), meta.len())?;
     let bytes = fs::read(&abs_path).map_err(|source| CodeError::Io {
         path: abs_path.clone(),
         source,

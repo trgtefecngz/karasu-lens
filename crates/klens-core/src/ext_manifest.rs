@@ -251,8 +251,12 @@ pub fn parse_and_validate_language_manifest(
     expected_dir_name: &str,
     _origin: ManifestOrigin,
 ) -> Result<LanguageExtensionManifest, String> {
-    let mut manifest: LanguageExtensionManifest =
-        toml::from_str(toml_source).map_err(|e| format!("TOML parse error: {e}"))?;
+    let mut manifest: LanguageExtensionManifest = toml::from_str(toml_source).map_err(|e| {
+        format!(
+            "TOML parse error: {}",
+            crate::config::describe_toml_error(&e, toml_source)
+        )
+    })?;
 
     if !is_valid_language_extension_id(&manifest.id) {
         return Err(format!(

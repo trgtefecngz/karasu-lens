@@ -168,7 +168,7 @@ inside a repository is ignored.
   (`C:\`, `/`) are never opened as a project.
 - **Secret redaction.** Known secret formats are masked before output leaves `klens`, for example
   private key blocks, Anthropic, OpenAI and Google API keys, GitHub and GitLab tokens, AWS keys,
-  `Bearer` tokens, JWTs, Slack, Stripe and npm tokens, and passwords inside database URLs.
+  `Bearer` tokens, JWTs, Slack, Stripe and npm tokens, and passwords inside database and remote URLs.
 - **Local UI hardening.** The dashboard binds to `127.0.0.1` only. It validates the `Host`
   header, uses an `HttpOnly` session cookie, and requires a CSRF check on every change.
 

@@ -133,6 +133,11 @@ impl ProjectRoot {
                 reason,
             });
         }
+        // klens state must live in a real folder inside the project: a linked `.klens` (or a
+        // link inside it) would redirect cache/config reads, writes and `detach` deletions.
+        if let Some(path) = crate::links::linked_entry_in_state_dir(&canonical_root) {
+            return Err(PathError::LinkedStateEntry { path });
+        }
         let project_id = project_id_from_canonical_root(&canonical_root);
         Ok(Self {
             canonical_root,
@@ -310,7 +315,37 @@ pub fn matches_any_pattern(rel: &RelPath, patterns: &[String]) -> bool {
 }
 
 /// Atomically write bytes to `target` using a sibling temporary file and rename.
+/// Atomically replace `target` with `content` (temp file + rename). On Unix the new file keeps
+/// the permission bits of the file it replaces, so a private `0600` config stays private.
 pub fn write_atomic(target: &Path, content: &[u8]) -> Result<(), PathError> {
+    write_atomic_with_mode_of(target, content, target)
+}
+
+/// Like [`write_atomic`], but the new file takes its Unix permission bits from `mode_source`
+/// when that file exists (used for backups, which must be as private as the original).
+pub fn write_atomic_with_mode_of(
+    target: &Path,
+    content: &[u8],
+    mode_source: &Path,
+) -> Result<(), PathError> {
+    #[cfg(unix)]
+    let source_permissions = fs::metadata(mode_source).ok().map(|m| m.permissions());
+    #[cfg(not(unix))]
+    let _ = mode_source;
+    write_atomic_inner(target, content, |_tmp_path: &Path| {
+        #[cfg(unix)]
+        if let Some(permissions) = &source_permissions {
+            fs::set_permissions(_tmp_path, permissions.clone())?;
+        }
+        Ok(())
+    })
+}
+
+fn write_atomic_inner(
+    target: &Path,
+    content: &[u8],
+    prepare_tmp: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), PathError> {
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
     if !parent.as_os_str().is_empty() {
         fs::create_dir_all(parent).map_err(|source| PathError::Io {
@@ -358,7 +393,10 @@ pub fn write_atomic(target: &Path, content: &[u8]) -> Result<(), PathError> {
         ),
     })?;
 
-    let write_res = file.write_all(content).and_then(|()| file.sync_all());
+    let write_res = file
+        .write_all(content)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| prepare_tmp(&tmp_path));
     drop(file);
 
     if let Err(source) = write_res {
@@ -708,5 +746,26 @@ mod tests {
             .collect();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0], "config.toml");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_keeps_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("klens-mode-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("config.json");
+        fs::write(&target, "{}").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+
+        write_atomic(&target, b"{\"a\":1}").unwrap();
+        let backup = dir.join("config.json.bak");
+        write_atomic_with_mode_of(&backup, b"{}", &target).unwrap();
+
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let (target_mode, backup_mode) = (mode(&target), mode(&backup));
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(target_mode, 0o600);
+        assert_eq!(backup_mode, 0o600);
     }
 }

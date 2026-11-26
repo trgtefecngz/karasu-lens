@@ -13,7 +13,9 @@ pub mod envelope;
 pub mod error;
 pub mod ext_manifest;
 pub mod extensions;
+pub mod git;
 pub mod hash;
+mod links;
 pub mod paths;
 pub mod redact;
 pub mod root_guard;
@@ -25,7 +27,7 @@ pub mod traits;
 pub use budget::{CHARS_PER_TOKEN, TokenBudget, estimate_tokens, estimate_tokens_from_bytes};
 pub use config::{
     GlobalConfig, ProjectConfig, ProjectMode, RegisteredProject, SUPPORTED_UI_LANGS,
-    is_supported_ui_lang,
+    describe_toml_error, is_supported_ui_lang,
 };
 pub use envelope::{
     Omission, OmissionKind, ProvenanceEnvelope, RawFallback, SCHEMA_VERSION, TrustLevel,
@@ -47,11 +49,13 @@ pub use extensions::{
     format_extension_toggle_text, known_extensions, list_extensions, set_extension_enabled,
     validate_extension_id,
 };
+pub use git::git_command;
 pub use hash::{
     blake3_file, blake3_normalized_bytes, blake3_parse_cache_key, blake3_raw_bytes, blake3_text,
     normalize_line_endings,
 };
-pub use paths::{ProjectRoot, RelPath, is_sensitive_path, write_atomic};
+pub use links::first_linked_component;
+pub use paths::{ProjectRoot, RelPath, is_sensitive_path, write_atomic, write_atomic_with_mode_of};
 pub use redact::{RedactionResult, SecretKind, redact_secrets};
 pub use root_guard::{is_unsafe_project_root, unsafe_project_root_reason};
 pub use traits::{

@@ -121,7 +121,8 @@ impl UiError {
                 CodeError::InvalidLineRange { .. }
                 | CodeError::InvalidReadTarget
                 | CodeError::NotAFile(_)
-                | CodeError::BinaryFile(_),
+                | CodeError::BinaryFile(_)
+                | CodeError::FileTooLarge { .. },
             ) => (400, "invalid_code_request"),
             Self::Exec(ExecError::RunNotFound(_) | ExecError::CheckpointNotFound(_)) => {
                 (404, "not_found")

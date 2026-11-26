@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use klens_adapters::DoctorReport;
 use klens_blueprint::{
@@ -439,19 +439,11 @@ fn collect_git_summary(root: &Path) -> Option<GitStatusSummary> {
 }
 
 fn run_git_readonly(root: &Path, args: &[&str]) -> Option<String> {
-    let mut cmd = Command::new("git");
-    cmd.args(["-c", "core.quotepath=false"])
-        .args(args)
-        .current_dir(root)
-        .env("GIT_OPTIONAL_LOCKS", "0")
+    let mut cmd = klens_core::git_command(root);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(klens_exec::WINDOWS_CREATE_NO_WINDOW);
-    }
     let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;

@@ -26,7 +26,12 @@ pub fn inspect_codex_toml_mcp(config_path: &Path) -> McpInspection {
 
     let table: toml::Table = match toml::from_str(&normalized) {
         Ok(t) => t,
-        Err(err) => return McpInspection::CorruptConfig(err.to_string()),
+        Err(err) => {
+            return McpInspection::CorruptConfig(klens_core::describe_toml_error(
+                &err,
+                &normalized,
+            ));
+        }
     };
 
     let Some(entry) = table
@@ -127,7 +132,7 @@ fn upsert_codex_toml_mcp_once(
     } else {
         toml::from_str(&normalized_lf).map_err(|err| AdapterError::InvalidTomlConfig {
             path: config_path.to_path_buf(),
-            reason: err.to_string(),
+            reason: klens_core::describe_toml_error(&err, &normalized_lf),
         })?
     };
 
@@ -217,7 +222,10 @@ fn upsert_codex_toml_mcp_once(
     // Fail-closed validation: guarantee generated TOML parses cleanly before writing.
     toml::from_str::<toml::Table>(&updated_lf).map_err(|err| AdapterError::InvalidTomlConfig {
         path: config_path.to_path_buf(),
-        reason: format!("generated TOML failed validation: {err}"),
+        reason: format!(
+            "generated TOML failed validation: {}",
+            klens_core::describe_toml_error(&err, &updated_lf)
+        ),
     })?;
 
     let encoded = fmt.encode(&updated_lf);
@@ -262,7 +270,7 @@ fn remove_codex_toml_mcp_once(
     let mut table: toml::Table =
         toml::from_str(&normalized_lf).map_err(|err| AdapterError::InvalidTomlConfig {
             path: config_path.to_path_buf(),
-            reason: err.to_string(),
+            reason: klens_core::describe_toml_error(&err, &normalized_lf),
         })?;
 
     let has_klens = table
@@ -307,7 +315,10 @@ fn remove_codex_toml_mcp_once(
         toml::from_str::<toml::Table>(&updated_lf).map_err(|err| {
             AdapterError::InvalidTomlConfig {
                 path: config_path.to_path_buf(),
-                reason: format!("resulting TOML after removal failed validation: {err}"),
+                reason: format!(
+                    "resulting TOML after removal failed validation: {}",
+                    klens_core::describe_toml_error(&err, &updated_lf)
+                ),
             }
         })?;
     }

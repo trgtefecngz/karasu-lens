@@ -675,6 +675,22 @@ fn resolve_symbol_matches<'a>(symbols: &'a [SymbolInfo], query: &str) -> Vec<&'a
         .collect()
 }
 
+/// Largest file `klens read` loads into memory (whole-file read before slicing lines).
+pub const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Refuse files over [`MAX_READ_BYTES`] instead of loading them (a repository can contain
+/// arbitrarily large generated files or logs).
+pub(crate) fn ensure_readable_size(display_path: &str, bytes: u64) -> Result<(), CodeError> {
+    if bytes > MAX_READ_BYTES {
+        return Err(CodeError::FileTooLarge {
+            path: display_path.to_string(),
+            bytes,
+            limit: MAX_READ_BYTES,
+        });
+    }
+    Ok(())
+}
+
 fn slice_numbered_lines(
     abs_path: &std::path::Path,
     display_path: &str,
@@ -687,6 +703,7 @@ fn slice_numbered_lines(
     if !meta.is_file() {
         return Err(CodeError::NotAFile(display_path.to_string()));
     }
+    ensure_readable_size(display_path, meta.len())?;
 
     let bytes = fs::read(abs_path).map_err(|source| CodeError::Io {
         path: abs_path.to_path_buf(),

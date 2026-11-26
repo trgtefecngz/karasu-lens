@@ -17,7 +17,7 @@ use std::fmt::Write as _;
 #[cfg(unix)]
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
 
@@ -419,18 +419,8 @@ struct GitQueryOutput {
 }
 
 fn run_git_query(project_root: &Path, args: &[&str]) -> Option<GitQueryOutput> {
-    let mut cmd = Command::new("git");
-    cmd.args(["-c", "core.quotepath=false"])
-        .args(args)
-        .current_dir(project_root)
-        .env("GIT_OPTIONAL_LOCKS", "0");
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    let mut cmd = klens_core::git_command(project_root);
+    cmd.args(args).stdin(Stdio::null()).stderr(Stdio::null());
 
     let output = cmd.output().ok()?;
     Some(GitQueryOutput {
@@ -446,26 +436,90 @@ fn resolve_pre_commit_hook_path(project_root: &Path) -> Result<PathBuf, AdapterE
         return Err(AdapterError::NotAGitRepo(project_root.to_path_buf()));
     }
 
-    let Some(res) = run_git_query(
-        project_root,
-        &["rev-parse", "--git-path", "hooks/pre-commit"],
-    ) else {
-        return Err(AdapterError::NotAGitRepo(project_root.to_path_buf()));
-    };
-    if !res.success {
-        return Err(AdapterError::NotAGitRepo(project_root.to_path_buf()));
+    // klens's git commands override `core.hooksPath` (so repository hooks never run), which
+    // means `--git-path hooks/...` cannot be used here. The setting is read as plain data
+    // instead; reading configuration never runs a program.
+    if let Some(hooks_dir) = configured_hooks_dir(project_root)? {
+        return Ok(hooks_dir.join("pre-commit"));
     }
-    let trimmed = res.stdout.trim();
-    if trimmed.is_empty() {
-        return Err(AdapterError::NotAGitRepo(project_root.to_path_buf()));
+    let common_dir = git_query_line(project_root, &["rev-parse", "--git-common-dir"])?;
+    Ok(absolute_from(project_root, &common_dir)
+        .join("hooks")
+        .join("pre-commit"))
+}
+
+/// `core.hooksPath`, resolved against the work tree top level. A value set in the
+/// repository's own configuration must stay inside the repository: that file can come with
+/// the folder, and klens must not be steered into writing a hook file anywhere else.
+fn configured_hooks_dir(project_root: &Path) -> Result<Option<PathBuf>, AdapterError> {
+    let Some(out) = run_git_query(
+        project_root,
+        &["config", "--show-scope", "--get-all", "core.hooksPath"],
+    ) else {
+        return Ok(None);
+    };
+    // The last value wins, ignoring klens's own command-line override (scope `command`).
+    let Some((scope, value)) = out
+        .stdout
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .rfind(|(scope, _)| *scope != "command")
+    else {
+        return Ok(None);
+    };
+    if !out.success || value.trim().is_empty() {
+        return Ok(None);
     }
 
-    let raw_path = PathBuf::from(trimmed);
-    if raw_path.is_absolute() {
-        Ok(raw_path)
-    } else {
-        Ok(project_root.join(raw_path))
+    let top = absolute_from(
+        project_root,
+        &git_query_line(project_root, &["rev-parse", "--show-toplevel"])?,
+    );
+    let raw = value.trim();
+    let dir = match raw.strip_prefix("~/") {
+        Some(rest) => std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map_or_else(|| PathBuf::from(raw), |home| PathBuf::from(home).join(rest)),
+        None => absolute_from(&top, raw),
+    };
+    let dir = lexically_normalized(&dir);
+
+    if matches!(scope, "local" | "worktree") && !dir.starts_with(lexically_normalized(&top)) {
+        return Err(AdapterError::UntrustedHooksPath { path: dir });
     }
+    Ok(Some(dir))
+}
+
+fn git_query_line(project_root: &Path, args: &[&str]) -> Result<String, AdapterError> {
+    run_git_query(project_root, args)
+        .filter(|out| out.success)
+        .map(|out| out.stdout.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .ok_or_else(|| AdapterError::NotAGitRepo(project_root.to_path_buf()))
+}
+
+fn absolute_from(base: &Path, raw: &str) -> PathBuf {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    }
+}
+
+/// Resolve `.` and `..` without touching the filesystem.
+fn lexically_normalized(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 fn format_shell_binary_path(binary_path: &Path) -> String {

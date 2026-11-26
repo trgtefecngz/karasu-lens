@@ -131,8 +131,20 @@ pub(crate) fn init_schema(conn: &mut Connection, project_id: &str) -> Result<(),
         )
         .optional()?;
 
+    let existing_project: Option<String> = tx
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'project_id'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+
     // Atomic v1 -> v2 (or any version mismatch) drop/recreate inside a single transaction.
-    if existing_version.as_deref() != Some(expected_version.as_str()) {
+    // A cache built for another project (copied in, or committed into a repository) is never
+    // adopted: its symbols/FTS rows could describe code that is not there.
+    if existing_version.as_deref() != Some(expected_version.as_str())
+        || existing_project.as_deref() != Some(project_id)
+    {
         tx.execute_batch(DROP_CACHE_TABLES_SQL)?;
     }
     tx.execute_batch(CREATE_CACHE_SCHEMA_SQL)?;

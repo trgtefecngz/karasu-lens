@@ -87,3 +87,22 @@ fn ignore_file_does_not_disturb_listing_or_pruning() {
     assert_eq!(store.list_runs(None).unwrap().len(), 2);
     assert!(store.runs_dir().join(".gitignore").is_file());
 }
+
+#[test]
+fn stored_command_line_is_redacted() {
+    let repo = TempRepo::new("redact-cmd");
+    let store = RunStore::new(ProjectRoot::new(&repo.0).unwrap());
+    let token = format!("ghp_{}", "1234567890abcdefghij1234567890abcdef");
+    let command = format!("gh api --token {token} /user");
+    let mut rec = record("raw\n");
+    rec.command = &command;
+    store
+        .save_run_with_id("20261126-130000-aa01", "2026-11-26T13:00:00Z", &rec)
+        .unwrap();
+
+    let runs = store.list_runs(None).unwrap();
+    assert!(!runs[0].command.contains(&token), "{}", runs[0].command);
+    let meta =
+        std::fs::read_to_string(store.runs_dir().join("20261126-130000-aa01.meta.json")).unwrap();
+    assert!(!meta.contains(&token));
+}

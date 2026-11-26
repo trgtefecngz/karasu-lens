@@ -266,7 +266,10 @@ fn read_json_string(source: &str, start: usize, mut line: usize) -> (String, usi
 fn parse_toml_top_level(source: &str, path: &RelPath) -> ParseOutcome<FileSymbols> {
     if let Err(err) = toml::from_str::<toml::Value>(source) {
         return ParseOutcome::Fallback {
-            reason: format!("invalid TOML syntax: {err}"),
+            reason: format!(
+                "invalid TOML syntax: {}",
+                klens_core::describe_toml_error(&err, source)
+            ),
         };
     }
 

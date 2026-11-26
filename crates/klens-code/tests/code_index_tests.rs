@@ -659,3 +659,64 @@ fn read_lines_on_directory_returns_not_a_file_error() {
         "expected CodeError::NotAFile(\"src\"), got: {err:?}"
     );
 }
+
+#[test]
+fn read_lines_refuses_oversized_files_instead_of_loading_them() {
+    let proj = TempDir::new("read-huge");
+    let ro_cache = TempDir::new("read-huge-cache");
+    let limit = usize::try_from(klens_code::read::MAX_READ_BYTES).unwrap();
+    proj.write("big.log", &"a".repeat(limit + 1));
+
+    let root = ProjectRoot::new(proj.path()).unwrap();
+    let index = CodeIndex::open_with_readonly_cache_dir(root, true, ro_cache.path()).unwrap();
+
+    let err = read_lines(
+        &index,
+        &RelPath::normalize("big.log").unwrap(),
+        LineRange::new(1, 2).unwrap(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, CodeError::FileTooLarge { .. }),
+        "expected FileTooLarge, got: {err:?}"
+    );
+}
+
+/// A cache database is only trusted by the project that built it. One copied in from
+/// elsewhere (or committed into a repository) must not feed fake symbols to agents.
+#[test]
+fn cache_db_from_another_project_is_discarded() {
+    let a = TempDir::new("poison-a");
+    let b = TempDir::new("poison-b");
+    a.write("src/lib.rs", "pub fn real() {}\n");
+    b.write("src/lib.rs", "pub fn real() {}\n");
+
+    drop(CodeIndex::open(ProjectRoot::new(a.path()).unwrap(), false).unwrap());
+    let a_db = a.path().join(".klens").join("cache").join("index.db");
+    {
+        let conn = rusqlite::Connection::open(&a_db).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO symbols (file_path, name, qualified_name, kind, signature, \
+             start_line, end_line, ordinal) VALUES ('src/lib.rs', 'totally_fake', \
+             'totally_fake', 'fn', 'fn totally_fake()', 1, 1, 0)",
+            [],
+        )
+        .unwrap();
+    }
+    let b_cache = b.path().join(".klens").join("cache");
+    fs::create_dir_all(&b_cache).unwrap();
+    fs::copy(&a_db, b_cache.join("index.db")).unwrap();
+
+    drop(CodeIndex::open(ProjectRoot::new(b.path()).unwrap(), false).unwrap());
+
+    let conn = rusqlite::Connection::open(b_cache.join("index.db")).unwrap();
+    let fake: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM symbols WHERE name = 'totally_fake'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(fake, 0, "foreign cache rows were adopted");
+}

@@ -82,7 +82,10 @@ pub fn check_tool_call_access(
     let cfg_path = project_root.root().join(".klens").join("config.toml");
     let config = ProjectConfig::load_or_default(&cfg_path).map_err(|err| PolicyDenial {
         code: PROJECT_ACCESS_RESTRICTED,
-        reason: format!("failed to load project policy `.klens/config.toml`: {err}"),
+        reason: klens_core::redact_secrets(&format!(
+            "failed to load project policy `.klens/config.toml`: {err}"
+        ))
+        .text,
     })?;
 
     evaluate_policy_for_call(&config, client_name, tool_name, arguments)?;

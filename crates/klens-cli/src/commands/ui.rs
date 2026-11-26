@@ -105,11 +105,29 @@ fn build_background_worker_args(args: &UiArgs, url_file: Option<&Path>) -> Vec<O
     worker_args
 }
 
+/// The rendezvous file carries the session token. It is created fresh (`create_new`, so a
+/// planted file or symlink is never followed) and, on Unix, readable only by its owner.
 fn write_atomic_rendezvous(path: &Path, content: &str) -> io::Result<()> {
+    use std::io::Write as _;
+
     let mut tmp = path.as_os_str().to_os_string();
     tmp.push(".tmp");
     let tmp_path = PathBuf::from(tmp);
-    fs::write(&tmp_path, content.as_bytes())?;
+    let _ = fs::remove_file(&tmp_path);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let written = options
+        .open(&tmp_path)
+        .and_then(|mut file| file.write_all(content.as_bytes()));
+    if let Err(err) = written {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err);
+    }
     if let Err(err) = fs::rename(&tmp_path, path) {
         let _ = fs::remove_file(&tmp_path);
         return Err(err);
@@ -123,9 +141,18 @@ struct RendezvousFileGuard {
 
 impl RendezvousFileGuard {
     fn new() -> Self {
+        use std::hash::BuildHasher as _;
+
         let seq = BG_LAUNCH_SEQ.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("klens-ui-launch-{}-{seq}.url", std::process::id()));
+        let pid = std::process::id();
+        // Unpredictable name (other local users cannot pre-create it) in the per-user runtime
+        // folder when there is one; the system temp folder otherwise.
+        let nonce = std::collections::hash_map::RandomState::new().hash_one((pid, seq));
+        let dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_dir())
+            .unwrap_or_else(std::env::temp_dir);
+        let path = dir.join(format!("klens-ui-launch-{pid}-{seq}-{nonce:016x}.url"));
         let _ = fs::remove_file(&path);
         Self { path }
     }
@@ -414,7 +441,11 @@ mod tests {
 
     use klens_ui::is_safe_loopback_launch_url;
 
-    use super::{UiArgs, build_background_worker_args, format_windows_argument_list};
+    use super::{
+        RendezvousFileGuard, UiArgs, build_background_worker_args, format_windows_argument_list,
+        write_atomic_rendezvous,
+    };
+    use std::fs;
 
     #[test]
     fn worker_args_forward_port_root_and_read_only_without_recursing_background() {
@@ -487,5 +518,29 @@ mod tests {
         assert!(!is_safe_loopback_launch_url(
             "http://127.0.0.1:4729/?token=abc&cmd=whoami;calc"
         ));
+    }
+
+    #[test]
+    fn rendezvous_file_is_fresh_and_private() {
+        let guard = RendezvousFileGuard::new();
+        let name = guard
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(name.len() > "klens-ui-launch-1-1.url".len() + 10, "{name}");
+
+        write_atomic_rendezvous(guard.path(), "http://127.0.0.1:1/?token=x\n").unwrap();
+        assert_eq!(
+            fs::read_to_string(guard.path()).unwrap(),
+            "http://127.0.0.1:1/?token=x\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(guard.path()).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
     }
 }

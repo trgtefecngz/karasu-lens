@@ -27,6 +27,11 @@ pub enum PathError {
     )]
     UnsafeProjectRoot { path: PathBuf, reason: &'static str },
 
+    #[error(
+        "`{path}` is a symbolic link or junction; klens keeps its state only in a real `.klens` folder inside the project. Remove the link and try again"
+    )]
+    LinkedStateEntry { path: PathBuf },
+
     #[error("access denied to sensitive file: {0}")]
     SensitiveFileBlocked(String),
 
@@ -59,7 +64,7 @@ pub enum KlensError {
     ProjectScopedLanguageParser { id: String },
 
     #[error("configuration parse error: {0}")]
-    ConfigParse(#[from] toml::de::Error),
+    ConfigParse(String),
 
     #[error("configuration serialization error: {0}")]
     ConfigSerialize(#[from] toml::ser::Error),

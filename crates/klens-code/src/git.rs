@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::Stdio;
 
 /// Result of invoking `git` in read-only query mode.
 #[derive(Debug, Clone)]
@@ -8,21 +8,11 @@ pub(crate) struct GitCommandOutput {
     pub stdout: String,
 }
 
-/// Run a read-only `git` subprocess in `root` with `CREATE_NO_WINDOW` on Windows
-/// and `-c core.quotepath=false` so Unicode / Turkish filenames are never octal-escaped.
+/// Run a read-only `git` subprocess in `root` through [`klens_core::git_command`], which
+/// disables every repository-configured program (fsmonitor, hooks, filters, diff drivers).
 pub(crate) fn run_git(root: &Path, args: &[&str]) -> Option<GitCommandOutput> {
-    let mut cmd = Command::new("git");
-    cmd.args(["-c", "core.quotepath=false"])
-        .args(args)
-        .current_dir(root)
-        .env("GIT_OPTIONAL_LOCKS", "0");
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    let mut cmd = klens_core::git_command(root);
+    cmd.args(args).stdin(Stdio::null()).stderr(Stdio::null());
 
     let output = cmd.output().ok()?;
     Some(GitCommandOutput {

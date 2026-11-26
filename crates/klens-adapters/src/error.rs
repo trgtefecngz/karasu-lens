@@ -34,6 +34,16 @@ pub enum AdapterError {
     )]
     ConfigChangedDuringUpdate { path: PathBuf },
 
+    #[error(
+        "the repository's own `core.hooksPath` points outside the repository (`{path}`); refusing to install the pre-commit hook there"
+    )]
+    UntrustedHooksPath { path: PathBuf },
+
+    #[error(
+        "`{path}` is a symbolic link or junction; refusing to write AI host files through it (remove the link and try again)"
+    )]
+    LinkedProjectPath { path: PathBuf },
+
     #[error("refusing to uninstall without explicit `--all` confirmation flag")]
     UninstallRequiresAllFlag,
 

@@ -8,14 +8,13 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use klens_core::{ProjectRoot, ProvenanceEnvelope, TrustLevel};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ExecError;
-use crate::runner::configure_no_window;
 use klens_core::time::generate_sortable_id;
 
 const CHECKPOINT_REF_PREFIX: &str = "refs/klens/checkpoints/";
@@ -210,10 +209,16 @@ pub fn rollback_checkpoint(
 
     // `-z`: paths are emitted verbatim (never C-quoted), so names containing `"`, `\`, tabs or
     // newlines are handled exactly (v0.3.3+).
+    // `--relative`: when the project is a sub-folder of a larger repository, only changes inside
+    // it are listed, with paths relative to it — the same base `checkout-index`, deletion and
+    // `rm --cached` below use. Files elsewhere in the repository are never touched.
     let diff_out = git_stdout(
         root,
         &[
             "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--relative",
             "-z",
             "--name-status",
             "--no-renames",
@@ -228,7 +233,11 @@ pub fn rollback_checkpoint(
 
     let mut fields = diff_out.split('\0').filter(|f| !f.is_empty());
     while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
-        if !is_safe_git_relative_path(path) || is_protected_klens_runtime_path(path) {
+        // Credential files are never restored or deleted (older checkpoints may contain them).
+        if !is_safe_git_relative_path(path)
+            || is_protected_klens_runtime_path(path)
+            || klens_core::sensitive::is_builtin_sensitive(path)
+        {
             continue;
         }
         let path = path.to_string();
@@ -422,6 +431,19 @@ fn snapshot_worktree_to_tree(root: &Path, git_dir: &Path) -> Result<String, Exec
         ],
         &env,
     );
+    // Never store credential files (`.env`, SSH keys, ...) in checkpoint objects: they travel
+    // with bundles, mirrors and backups of the repository.
+    let mut rm_sensitive: Vec<String> = ["rm", "--cached", "-r", "--ignore-unmatch", "--"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    rm_sensitive.extend(
+        klens_core::sensitive::BUILTIN_SENSITIVE_PATTERNS
+            .iter()
+            .map(|pattern| format!(":(glob,icase)**/{pattern}")),
+    );
+    let rm_args: Vec<&str> = rm_sensitive.iter().map(String::as_str).collect();
+    git_stdout_with_env(root, &rm_args, &env)?;
     let tree_oid = git_stdout_with_env(root, &["write-tree"], &env)?;
     Ok(tree_oid.trim().to_string())
 }
@@ -613,17 +635,15 @@ fn git_stdout_with_env(
     args: &[&str],
     extra_env: &[(String, String)],
 ) -> Result<String, ExecError> {
-    let mut cmd = Command::new("git");
-    cmd.args(["-c", "core.quotepath=false", "-c", "core.autocrlf=false"])
+    let mut cmd = klens_core::git_command(root);
+    cmd.args(["-c", "core.autocrlf=false"])
         .args(args)
-        .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
-    configure_no_window(&mut cmd);
 
     let output = cmd.output().map_err(|source| ExecError::SpawnFailed {
         program: "git".to_string(),
