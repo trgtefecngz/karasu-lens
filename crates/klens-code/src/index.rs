@@ -151,6 +151,14 @@ impl CodeIndex {
         &self.store
     }
 
+    /// Which external sidecar (custom `ext-lang-*` or ctags) would handle a non-built-in file.
+    pub(crate) fn external_parser_slot(
+        &mut self,
+        rel: &RelPath,
+    ) -> Option<crate::sidecar::ExternalParserSlot> {
+        self.sidecars.resolve_slot(rel)
+    }
+
     pub fn is_read_only(&self) -> bool {
         self.read_only
     }

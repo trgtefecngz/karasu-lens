@@ -16,7 +16,8 @@ Use Karasu Lens (`klens`) tools to maximize verified signal per token and elimin
 3. **Read surgically:** Fetch only the required symbol or line slice with `klens_read` (supports qualified names like `impl Foo::new` and batch `targets`).
 4. **Search cleanly:** Use `klens_find` instead of noisy raw `grep` across `target/` or `node_modules/`.
 5. **Check blast radius before edits:** Run `klens_impact` on any symbol or file you plan to change so callers and dependents are known upfront.
-6. **Run tests through `klens_run`:** Execute `cargo`, `git`, `npm`/`pnpm`, `pytest`, and `go test` via `klens_run` to filter noise while preserving 100% of error context and raw logs.
+6. **Check every edit right away:** Run `klens_check` on the files you changed (or `paths: ["diff"]`) before running tests. Fix every reported syntax error first; files listed as "not checked" were not validated, so never treat them as OK.
+7. **Run tests through `klens_run`:** Execute `cargo`, `git`, `npm`/`pnpm`, `pytest`, and `go test` via `klens_run` to filter noise while preserving 100% of error context and raw logs.
 
 ## Zero-Deception Rules
 

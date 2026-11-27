@@ -155,7 +155,7 @@ fn mcp_eight_tools_budget_and_blueprint_full_lifecycle_with_handoff() {
         .unwrap();
     let list_val: Value = serde_json::from_str(&list_raw).unwrap();
     let tools = list_val["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 8);
+    assert_eq!(tools.len(), 9);
     assert!(tools.iter().any(|t| t["name"] == "klens_blueprint"));
     let list_tokens = estimate_tokens(&list_raw);
     assert!(

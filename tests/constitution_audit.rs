@@ -400,13 +400,13 @@ fn blacklist_14_idempotent_init_updates_moved_binary_path_without_error() {
 }
 
 // ---------------------------------------------------------------------------
-// Windows stdio MCP CRLF Framing + 8-Tool Token Budget (< 1,200 tokens)
+// Windows stdio MCP CRLF Framing + 9-Tool Token Budget (< 1,200 tokens)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn mcp_stdio_handles_windows_crlf_emits_pure_lf_and_stays_under_token_budget() {
     let tools = tool_definitions();
-    assert_eq!(tools.len(), 8, "expected exactly 8 core MCP tools");
+    assert_eq!(tools.len(), 9, "expected exactly 9 core MCP tools");
     let tools_json = serde_json::to_string(&serde_json::json!({ "tools": tools })).unwrap();
     let token_count = estimate_tokens(&tools_json);
     assert!(
@@ -466,7 +466,7 @@ fn mcp_stdio_handles_windows_crlf_emits_pure_lf_and_stays_under_token_budget() {
     let r2: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
     assert_eq!(r1["id"], 1);
     assert_eq!(r2["id"], 2);
-    assert_eq!(r2["result"]["tools"].as_array().unwrap().len(), 8);
+    assert_eq!(r2["result"]["tools"].as_array().unwrap().len(), 9);
     assert!(
         !proj.path().join(".klens").exists(),
         "MCP initialize + tools/list must write 0 files into project"

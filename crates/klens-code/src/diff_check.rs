@@ -544,6 +544,17 @@ pub fn format_diff_check_text(envelope: &ProvenanceEnvelope<DiffCheckPayload>) -
 // Git status & unified diff (`--unified=0`) parsing
 // ---------------------------------------------------------------------------
 
+/// Changed paths in the working tree (or only the staged index) with their change kind
+/// (`modified`, `added`, `untracked`, `deleted`, `renamed`, `renamed_from`, ...), as `diff-check`
+/// sees them. Used by `klens check diff`.
+pub(crate) fn changed_paths(root: &std::path::Path, staged_only: bool) -> BTreeMap<String, String> {
+    let mut all = collect_git_status_entries(root, staged_only);
+    for path in collect_parsed_git_diffs(root, staged_only).into_keys() {
+        all.entry(path).or_insert_with(|| "modified".to_string());
+    }
+    all
+}
+
 fn collect_git_status_entries(
     root: &std::path::Path,
     staged_only: bool,

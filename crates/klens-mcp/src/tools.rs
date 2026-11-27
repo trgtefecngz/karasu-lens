@@ -211,5 +211,18 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             }),
             annotations: ToolAnnotations::mutating(),
         },
+        ToolDefinition {
+            name: "klens_check",
+            description: "Use right after editing code to catch syntax errors before running tests.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["paths"],
+                "properties": {
+                    "paths": { "type": "array", "items": { "type": "string" }, "description": "files, or [\"diff\"]/[\"diff:staged\"]" },
+                    "diff_check": { "type": "boolean" }
+                }
+            }),
+            annotations: ToolAnnotations::read_only(),
+        },
     ]
 }

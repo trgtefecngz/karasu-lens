@@ -110,7 +110,7 @@ fn mcp_seven_tools_budget_and_klens_memory_ast_symbol_staleness_lifecycle() {
         .unwrap();
     let list_val: Value = serde_json::from_str(&list_raw).unwrap();
     let tools = list_val["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 8);
+    assert_eq!(tools.len(), 9);
     assert!(tools.iter().any(|t| t["name"] == "klens_memory"));
     assert!(tools.iter().any(|t| t["name"] == "klens_blueprint"));
     let tokens = estimate_tokens(&list_raw);
