@@ -69,6 +69,7 @@ pub fn setup_user_scope(
     target: HostTarget,
     binary: &Path,
     dry_run: bool,
+    install_hook: bool,
 ) -> Result<SetupReport, AdapterError> {
     let hosts: Vec<HostKind> = match target {
         HostTarget::Single(kind) => vec![kind],
@@ -115,15 +116,20 @@ pub fn setup_user_scope(
             });
 
             // `PreToolUse` hook: simple noisy commands go through `klens run` (off switch:
-            // `KLENS_HOOKS=off`; never auto-approves anything).
-            let outcome = registry
-                .claude_code
-                .install_global_pre_tool_hook(binary, dry_run)?;
-            entries.push(SetupEntry {
-                host: "Claude Code hook".to_string(),
-                config_path: clean_binary_path_string(&registry.claude_code.global_settings_path()),
-                status: file_status(&outcome),
-            });
+            // `KLENS_HOOKS=off`; never auto-approves anything). `--no-hook` skips it and leaves
+            // `~/.claude/settings.json` untouched.
+            if install_hook {
+                let outcome = registry
+                    .claude_code
+                    .install_global_pre_tool_hook(binary, dry_run)?;
+                entries.push(SetupEntry {
+                    host: "Claude Code hook".to_string(),
+                    config_path: clean_binary_path_string(
+                        &registry.claude_code.global_settings_path(),
+                    ),
+                    status: file_status(&outcome),
+                });
+            }
         }
     }
 

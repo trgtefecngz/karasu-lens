@@ -235,3 +235,33 @@ fn disconnect_continues_past_a_broken_user_settings_file() {
         "the broken file must be left exactly as it was"
     );
 }
+
+#[test]
+fn setup_without_the_hook_leaves_claude_settings_untouched() {
+    let h = Home::new("no-hook");
+    let settings = h.home.join(".claude").join("settings.json");
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(&settings, "{\n  \"autoMode\": true\n}\n").unwrap();
+
+    let out = h.klens(&["setup", "--no-hook"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        fs::read_to_string(&settings).unwrap(),
+        "{\n  \"autoMode\": true\n}\n"
+    );
+    let claude = fs::read_to_string(h.home.join(".claude.json")).unwrap();
+    assert!(
+        claude.contains("\"klens\""),
+        "MCP registration still happens: {claude}"
+    );
+    let guide = fs::read_to_string(h.home.join(".claude").join("CLAUDE.md")).unwrap();
+    assert!(
+        guide.contains("klens_outline"),
+        "guide still written: {guide}"
+    );
+}

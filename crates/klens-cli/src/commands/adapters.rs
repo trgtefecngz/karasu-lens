@@ -506,6 +506,9 @@ pub(crate) struct SetupArgs {
     /// Preview planned changes without writing anything
     #[arg(long)]
     pub dry_run: bool,
+    /// Skip the Claude Code `PreToolUse` hook (leave `~/.claude/settings.json` untouched)
+    #[arg(long)]
+    pub no_hook: bool,
     /// Emit JSON output
     #[arg(long)]
     pub json: bool,
@@ -518,7 +521,13 @@ pub(crate) fn run_setup_cmd(args: SetupArgs) -> Result<String, CliError> {
         Some(path) => path,
         None => current_binary_path()?,
     };
-    let report = setup_user_scope(&registry, args.host.into(), &binary, args.dry_run)?;
+    let report = setup_user_scope(
+        &registry,
+        args.host.into(),
+        &binary,
+        args.dry_run,
+        !args.no_hook,
+    )?;
     if args.json {
         encode_json_value(serde_json::to_value(&report).map_err(KlensError::from)?)
     } else {
