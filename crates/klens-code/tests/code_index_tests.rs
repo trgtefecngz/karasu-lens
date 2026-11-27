@@ -720,3 +720,30 @@ fn cache_db_from_another_project_is_discarded() {
         .unwrap();
     assert_eq!(fake, 0, "foreign cache rows were adopted");
 }
+
+/// With klens registered for every project, opening any repository must not leave
+/// untracked files behind: the cache folder ignores itself, like `.klens/runs`.
+#[test]
+fn index_cache_is_invisible_to_git_in_an_unattached_repository() {
+    let proj = TempDir::new("cache-gitignore");
+    proj.write("src/lib.rs", "pub fn a() {}\n");
+    let status = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(proj.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    drop(CodeIndex::open(ProjectRoot::new(proj.path()).unwrap(), false).unwrap());
+
+    let out = std::process::Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .current_dir(proj.path())
+        .output()
+        .unwrap();
+    let listed = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !listed.contains(".klens"),
+        "cache is visible to git:\n{listed}"
+    );
+}

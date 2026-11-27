@@ -64,18 +64,53 @@ where
     estimate_tokens_from_bytes(total_bytes) as u64
 }
 
-fn parse_map_focus(args: &Value) -> Result<Option<RelPath>, McpError> {
+/// Lines shown when `klens_read` gets a `path` without `symbol`/`lines`.
+const DEFAULT_READ_HEAD_LINES: usize = 200;
+
+/// First [`DEFAULT_READ_HEAD_LINES`] lines of a file, with a hint when the file is longer.
+fn read_file_head(
+    index: &klens_code::index::CodeIndex,
+    rel: &RelPath,
+) -> Result<klens_core::ProvenanceEnvelope<klens_code::read::ReadResultData>, McpError> {
+    let range = LineRange::new(1, DEFAULT_READ_HEAD_LINES)?;
+    let mut envelope = read_lines(index, rel, range)?;
+    envelope
+        .warnings
+        .retain(|w| !w.starts_with("requested end line"));
+    if let Some(total) = envelope.data.total_lines
+        && total > DEFAULT_READ_HEAD_LINES
+    {
+        envelope.warnings.push(format!(
+            "showing L1-L{DEFAULT_READ_HEAD_LINES} of {total} lines; use `klens_outline` and \
+             read a `symbol`, or pass `lines` for another range"
+        ));
+    }
+    // Also cap by bytes: a single minified line can be megabytes.
+    if let Some(content) = envelope.data.content.as_mut()
+        && content.len() > DEFAULT_READ_HEAD_BYTES
+    {
+        let full = content.len();
+        let mut cut = DEFAULT_READ_HEAD_BYTES;
+        while !content.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        content.truncate(cut);
+        envelope.warnings.push(format!(
+            "showing the first {cut} of {full} bytes (very long lines); pass `lines` for a \
+             smaller range or use `klens_find` to locate what you need"
+        ));
+    }
+    Ok(envelope)
+}
+
+/// Bytes shown when `klens_read` gets a `path` without `symbol`/`lines`.
+const DEFAULT_READ_HEAD_BYTES: usize = 32 * 1024;
+
+fn parse_map_focus(root: &ProjectRoot, args: &Value) -> Result<Option<RelPath>, McpError> {
     let parse_opt = |field: &str| -> Result<Option<Option<RelPath>>, McpError> {
         match parse_optional_string(args, field)? {
             None => Ok(None),
-            Some(raw) => {
-                let trimmed = raw.trim();
-                if trimmed.is_empty() || trimmed == "." {
-                    Ok(Some(None))
-                } else {
-                    Ok(Some(Some(RelPath::normalize(trimmed)?)))
-                }
-            }
+            Some(raw) => Ok(Some(root.relative_input_or_root(&raw)?)),
         }
     };
 
@@ -92,7 +127,7 @@ fn parse_map_focus(args: &Value) -> Result<Option<RelPath>, McpError> {
 fn handle_map(ctx: &ToolContext<'_>, args: &Value) -> Result<ToolExecution, McpError> {
     let format = parse_format(args)?;
     let budget = parse_optional_usize(args, "budget")?.unwrap_or(DEFAULT_MAP_BUDGET_TOKENS);
-    let focus = parse_map_focus(args)?;
+    let focus = parse_map_focus(ctx.project_root, args)?;
 
     let mut index = open_index(ctx)?;
     let envelope = build_project_map_focused(&mut index, budget, focus.as_ref())?;
@@ -159,11 +194,7 @@ fn handle_outline(ctx: &ToolContext<'_>, args: &Value) -> Result<ToolExecution, 
         .ok_or_else(|| McpError::InvalidParams("`path` must be a string".to_string()))?;
     let budget = parse_optional_usize(args, "budget")?;
 
-    let rel_opt = if raw_path.is_empty() || raw_path == "." {
-        None
-    } else {
-        Some(RelPath::normalize(raw_path)?)
-    };
+    let rel_opt = ctx.project_root.relative_input_or_root(raw_path)?;
 
     let mut index = open_index(ctx)?;
     let envelope = outline_path(&mut index, rel_opt.as_ref(), budget)?;
@@ -243,6 +274,8 @@ fn handle_read(ctx: &ToolContext<'_>, args: &Value) -> Result<ToolExecution, Mcp
                 .ok_or_else(|| {
                     McpError::InvalidParams("each target requires a non-empty `path`".to_string())
                 })?;
+            let rel_path = ctx.project_root.relative_input(path)?;
+            let path = rel_path.as_str();
             let symbol = parse_optional_string(item, "symbol")?
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
@@ -303,7 +336,7 @@ fn handle_read(ctx: &ToolContext<'_>, args: &Value) -> Result<ToolExecution, Mcp
                 "`klens_read` requires `path` (with `symbol` or `lines`) or `targets`".to_string(),
             )
         })?;
-    let rel = RelPath::normalize(path)?;
+    let rel = ctx.project_root.relative_input(path)?;
 
     let symbol = parse_optional_string(args, "symbol")?
         .map(|s| s.trim().to_string())
@@ -319,9 +352,11 @@ fn handle_read(ctx: &ToolContext<'_>, args: &Value) -> Result<ToolExecution, Mcp
             let range = LineRange::parse(spec)?;
             read_lines(&index, &rel, range)?
         }
-        _ => {
+        // Path only (a very common first call): show the start of the file instead of failing.
+        (None, None) => read_file_head(&index, &rel)?,
+        (Some(_), Some(_)) => {
             return Err(McpError::InvalidParams(
-                "`klens_read` requires exactly one of `symbol` or `lines`".to_string(),
+                "`klens_read` takes `symbol` or `lines`, not both".to_string(),
             ));
         }
     };

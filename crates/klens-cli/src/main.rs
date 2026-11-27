@@ -9,9 +9,9 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use crate::commands::adapters::{
-    AttachArgs, DetachArgs, DetectArgs, DisconnectArgs, DoctorArgs, InitArgs, ScanArgs,
+    AttachArgs, DetachArgs, DetectArgs, DisconnectArgs, DoctorArgs, InitArgs, ScanArgs, SetupArgs,
     UninstallArgs, run_attach_cmd, run_detach_cmd, run_detect_cmd, run_disconnect_cmd,
-    run_doctor_cmd, run_init_cmd, run_scan_cmd, run_uninstall_cmd,
+    run_doctor_cmd, run_init_cmd, run_scan_cmd, run_setup_cmd, run_uninstall_cmd,
 };
 use crate::commands::blueprint::{BlueprintArgs, HandoffArgs, run_blueprint_cmd, run_handoff_cmd};
 use crate::commands::code::{
@@ -80,6 +80,8 @@ enum Commands {
     Scan(ScanArgs),
     /// Idempotently install or update `klens` MCP/skills for Antigravity, Claude Code, Codex, or Generic.
     Init(InitArgs),
+    /// Register `klens` once, at user scope, for every installed AI host (works in every project).
+    Setup(SetupArgs),
     /// Register a project in `~/.klens/config.toml`, initialize `.klens/config.toml`, and update `.gitignore`.
     Attach(AttachArgs),
     /// Surgically remove project-local `klens` artifacts (preserves `blueprint/` and `memory/` unless `--purge`).
@@ -150,6 +152,7 @@ fn run(cli: Cli) -> Result<CliOutcome, CliError> {
         Commands::Detect(args) => Ok(CliOutcome::ok(run_detect_cmd(args)?)),
         Commands::Scan(args) => Ok(CliOutcome::ok(run_scan_cmd(args)?)),
         Commands::Init(args) => Ok(CliOutcome::ok(run_init_cmd(args)?)),
+        Commands::Setup(args) => Ok(CliOutcome::ok(run_setup_cmd(args)?)),
         Commands::Attach(args) => Ok(CliOutcome::ok(run_attach_cmd(args)?)),
         Commands::Detach(args) => Ok(CliOutcome::ok(run_detach_cmd(args)?)),
         Commands::Disconnect(args) => Ok(CliOutcome::ok(run_disconnect_cmd(args)?)),
@@ -159,7 +162,14 @@ fn run(cli: Cli) -> Result<CliOutcome, CliError> {
         Commands::Blueprint(args) => Ok(CliOutcome::ok(run_blueprint_cmd(args)?)),
         Commands::Handoff(args) => Ok(CliOutcome::ok(run_handoff_cmd(args)?)),
         Commands::Ext(args) => Ok(CliOutcome::ok(run_ext_cmd(args)?)),
-        Commands::Hook(args) => Ok(CliOutcome::ok(run_hook_cmd(args)?)),
+        Commands::Hook(args) => {
+            let output = run_hook_cmd(args)?;
+            // A silent hook must print nothing at all (not even a newline).
+            Ok(CliOutcome {
+                output: (!output.is_empty()).then_some(output),
+                exit_code: ExitCode::SUCCESS,
+            })
+        }
         Commands::Ui(args) => run_ui_cmd(args),
     }
 }

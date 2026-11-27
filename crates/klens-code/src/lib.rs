@@ -14,6 +14,7 @@ mod git;
 pub mod graph;
 pub mod health;
 pub mod impact;
+mod impact_format;
 pub mod index;
 pub mod languages;
 pub mod map;

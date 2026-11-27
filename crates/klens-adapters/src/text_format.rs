@@ -281,6 +281,18 @@ pub fn read_text_file(path: &Path) -> Result<Option<(TextFormat, String, Vec<u8>
     Ok(Some((fmt, normalized, bytes)))
 }
 
+/// Refuse to replace a file that is a symbolic link: the atomic rename would turn the link into
+/// a plain copy (dotfile managers link `~/.claude/settings.json`, `CLAUDE.md`, ...), and in a
+/// project a link could point outside it. The user edits such a file by hand instead.
+fn refuse_file_link(target: &Path) -> Result<(), AdapterError> {
+    if fs::symlink_metadata(target).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(AdapterError::LinkedProjectPath {
+            path: target.to_path_buf(),
+        });
+    }
+    Ok(())
+}
+
 /// Atomically write `new_bytes` to `target` if different from existing contents.
 ///
 /// Guarantees:
@@ -293,6 +305,7 @@ pub fn apply_file_write(
     dry_run: bool,
     backup_existing: bool,
 ) -> Result<FileOpOutcome, AdapterError> {
+    refuse_file_link(target)?;
     let existing_bytes = if target.exists() {
         Some(fs::read(target).map_err(|source| AdapterError::Io {
             path: target.to_path_buf(),
@@ -403,6 +416,7 @@ pub fn apply_config_write(
     backup_existing: bool,
     always_write: bool,
 ) -> Result<FileOpOutcome, AdapterError> {
+    refuse_file_link(target)?;
     let current = read_optional_bytes(target)?;
     ensure_unchanged(target, expected_original, current.as_deref())?;
 
@@ -660,5 +674,37 @@ mod tests {
         let broken = "user\n<!-- klens:start -->\norphan\n";
         let err = upsert_marked_block(p, Some(broken), MarkerStyle::Html, "new").unwrap_err();
         assert!(matches!(err, AdapterError::MalformedMarkerBlock { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_config_files_are_never_replaced() {
+        let dir = std::env::temp_dir().join(format!("klens-link-write-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real-settings.json");
+        let link = dir.join("settings.json");
+        fs::write(&real, "{}\n").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let config = apply_config_write(&link, Some(b"{}\n"), b"{\"a\":1}\n", false, false, false);
+        let plain = apply_file_write(&link, b"x\n", false, false);
+        let still_link = fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink();
+        let real_text = fs::read_to_string(&real).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(
+            matches!(config, Err(AdapterError::LinkedProjectPath { .. })),
+            "{config:?}"
+        );
+        assert!(
+            matches!(plain, Err(AdapterError::LinkedProjectPath { .. })),
+            "{plain:?}"
+        );
+        assert!(still_link);
+        assert_eq!(real_text, "{}\n");
     }
 }

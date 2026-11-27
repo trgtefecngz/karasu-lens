@@ -7,8 +7,9 @@ use klens_adapters::{
     AdapterOptions, AdapterRegistry, ConciseLevel, HostTarget, SkillSelection, attach_project,
     current_binary_path, detach_project, detect_environment, disconnect_host, format_attach_text,
     format_detach_text, format_detect_text, format_disconnect_text, format_doctor_text,
-    format_init_text, format_scan_text, format_uninstall_text, global_config_path_in, init_hosts,
-    render_standard_mcp_json, resolve_home_dir, run_doctor, scan_directory, uninstall_all,
+    format_init_text, format_scan_text, format_setup_text, format_uninstall_text,
+    global_config_path_in, init_hosts, render_standard_mcp_json, resolve_home_dir, run_doctor,
+    scan_directory, setup_user_scope, uninstall_all,
 };
 use klens_code::inspect_language_extensions_doctor;
 use klens_core::{AdapterContext, CheckSeverity, DoctorCheck, KlensError, ProjectMode};
@@ -491,5 +492,36 @@ pub(crate) fn run_doctor_cmd(args: DoctorArgs) -> Result<String, CliError> {
         encode_json_value(serde_json::to_value(&report).map_err(KlensError::from)?)
     } else {
         Ok(format_doctor_text(&report))
+    }
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct SetupArgs {
+    /// Host to register (`auto` = every installed host with user-scope MCP)
+    #[arg(long, value_enum, default_value = "auto")]
+    pub host: CliHostTarget,
+    /// Explicit `klens` binary path to register (defaults to the current executable)
+    #[arg(long)]
+    pub binary: Option<PathBuf>,
+    /// Preview planned changes without writing anything
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Emit JSON output
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `klens setup`: user-scope registration; needs no project (works from any folder).
+pub(crate) fn run_setup_cmd(args: SetupArgs) -> Result<String, CliError> {
+    let registry = AdapterRegistry::with_defaults(&AdapterOptions::default())?;
+    let binary = match args.binary {
+        Some(path) => path,
+        None => current_binary_path()?,
+    };
+    let report = setup_user_scope(&registry, args.host.into(), &binary, args.dry_run)?;
+    if args.json {
+        encode_json_value(serde_json::to_value(&report).map_err(KlensError::from)?)
+    } else {
+        Ok(format_setup_text(&report))
     }
 }

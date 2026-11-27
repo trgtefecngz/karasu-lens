@@ -15,6 +15,7 @@ pub mod ext_manifest;
 pub mod extensions;
 pub mod git;
 pub mod hash;
+mod input_path;
 mod links;
 pub mod paths;
 pub mod redact;

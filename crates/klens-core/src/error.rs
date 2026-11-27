@@ -32,6 +32,11 @@ pub enum PathError {
     )]
     LinkedStateEntry { path: PathBuf },
 
+    #[error(
+        "`{path}` is outside the project `{root}`; pass a path inside the project (relative to its root, or absolute under it)"
+    )]
+    OutsideProject { path: String, root: String },
+
     #[error("access denied to sensitive file: {0}")]
     SensitiveFileBlocked(String),
 

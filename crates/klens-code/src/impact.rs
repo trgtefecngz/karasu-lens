@@ -684,21 +684,7 @@ pub fn format_impact_text(envelope: &ProvenanceEnvelope<ImpactPayload>) -> Strin
     }
 
     match data.status {
-        ImpactStatus::Ok => {
-            for hit in &data.hits {
-                let line_suffix = hit.line.map(|l| format!(":L{l}")).unwrap_or_default();
-                let scope = hit
-                    .enclosing_symbol
-                    .as_deref()
-                    .map(|s| format!(" in `{s}`"))
-                    .unwrap_or_default();
-                let _ = writeln!(
-                    out,
-                    "  [d={} | {:?} | {:?}] {}{}{scope} — {}",
-                    hit.distance, hit.confidence, hit.relation, hit.path, line_suffix, hit.evidence
-                );
-            }
-        }
+        ImpactStatus::Ok => crate::impact_format::write_grouped_hits(&mut out, &data.hits),
         ImpactStatus::AmbiguousTarget => {
             if let Some(msg) = &data.message {
                 let _ = writeln!(out, "AMBIGUOUS_TARGET: {msg}");

@@ -121,6 +121,9 @@ impl CodeIndex {
                 .join("index.db")
         };
 
+        if !effective_read_only {
+            ensure_cache_ignored_by_git(&db_path);
+        }
         let store = IndexStore::open(&db_path, project_root.project_id())?;
         let global_cfg_path = global_cfg_override.or_else(default_global_config_path);
         // Sidecars are trusted ONLY from `~/.klens` (never from the project's own config).
@@ -530,6 +533,23 @@ impl CodeIndex {
 fn default_global_config_path() -> Option<PathBuf> {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
     Some(PathBuf::from(home).join(".klens").join("config.toml"))
+}
+
+/// The in-project cache folder ignores itself (`*`), so projects that never ran
+/// `klens attach` show no untracked `.klens/cache` files. Best effort: a failure here only
+/// means the folder stays visible to git.
+fn ensure_cache_ignored_by_git(db_path: &Path) {
+    let Some(cache_dir) = db_path.parent() else {
+        return;
+    };
+    let ignore = cache_dir.join(".gitignore");
+    if ignore.exists() || std::fs::create_dir_all(cache_dir).is_err() {
+        return;
+    }
+    let _ = klens_core::write_atomic(
+        &ignore,
+        b"# Created by klens: disposable index cache, never committed.\n*\n",
+    );
 }
 
 /// Resolve `~/.klens/readonly-cache` cross-platform.

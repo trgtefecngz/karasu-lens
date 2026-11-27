@@ -11,6 +11,7 @@ pub mod format;
 pub mod git_hook;
 pub mod lifecycle;
 mod purge;
+pub mod setup;
 pub mod skills;
 pub mod text_format;
 
@@ -37,6 +38,7 @@ pub use lifecycle::{
     ScannedProject, UninstallReport, attach_project, current_binary_path, detach_project,
     disconnect_host, init_hosts, scan_directory, uninstall_all,
 };
+pub use setup::{SetupEntry, SetupReport, SetupStatus, format_setup_text, setup_user_scope};
 pub use skills::{
     ConciseLevel, EMBEDDED_SKILLS, EmbeddedSkill, SkillSelection, SkillSyncReport,
     count_installed_skills, install_skills_into_dir, remove_klens_skills_from_dir,

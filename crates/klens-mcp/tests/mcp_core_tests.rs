@@ -764,3 +764,108 @@ fn klens_map_module_focus_returns_boundary_links_deterministically_and_fails_clo
         "nonexistent focus path must fail closed: {missing_resp}"
     );
 }
+
+fn call_tool(server: &mut McpServer, id: u64, name: &str, arguments: Value) -> Value {
+    let raw = server
+        .handle_raw_line(
+            &json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": { "name": name, "arguments": arguments }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+/// The first calls an agent makes must work: absolute paths inside the project (what Claude
+/// Code and Codex pass by default) and `klens_read` with only a `path`.
+#[test]
+fn first_calls_accept_absolute_paths_and_path_only_reads() {
+    let (proj, aux) = make_sample_project("first-calls");
+    let mut server = new_server(&proj, &aux);
+    let abs_lib = ProjectRoot::new(proj.path())
+        .unwrap()
+        .root()
+        .join("src")
+        .join("lib.rs")
+        .display()
+        .to_string();
+
+    let outline = call_tool(&mut server, 2, "klens_outline", json!({ "path": abs_lib }));
+    assert!(outline["error"].is_null(), "{outline}");
+    let text = outline["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("greet_turkish"), "{text}");
+
+    let read = call_tool(&mut server, 3, "klens_read", json!({ "path": abs_lib }));
+    assert!(read["error"].is_null(), "{read}");
+    let text = read["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("L1| pub struct Alpha;"), "{text}");
+    assert!(!text.contains("clamped"), "{text}");
+
+    let outside = call_tool(
+        &mut server,
+        4,
+        "klens_read",
+        json!({ "path": aux.path().join("x.rs").display().to_string(), "lines": "1-2" }),
+    );
+    let message = outside.to_string();
+    assert!(message.contains("outside the project"), "{message}");
+}
+
+/// Path-only reads are capped by bytes too: one huge line (minified bundle, data dump) must
+/// not flood the agent's context.
+#[test]
+fn path_only_read_is_capped_by_bytes() {
+    let (proj, aux) = make_sample_project("head-bytes");
+    proj.write(
+        "bundle.min.js",
+        &format!("var a='{}';\n", "x".repeat(200_000)),
+    );
+    let mut server = new_server(&proj, &aux);
+
+    let read = call_tool(
+        &mut server,
+        2,
+        "klens_read",
+        json!({ "path": "bundle.min.js" }),
+    );
+    assert!(read["error"].is_null(), "{read}");
+    let text = read["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.len() < 40_000, "response is {} bytes", text.len());
+    assert!(
+        text.contains("bytes"),
+        "no truncation notice: {}",
+        &text[..200]
+    );
+}
+
+/// Agents often pass the absolute project root itself as `path` / `focus`.
+#[test]
+fn absolute_project_root_means_the_whole_project() {
+    let (proj, aux) = make_sample_project("abs-root");
+    let mut server = new_server(&proj, &aux);
+    let canonical = ProjectRoot::new(proj.path())
+        .unwrap()
+        .root()
+        .display()
+        .to_string();
+    let root = canonical.trim_start_matches(r"\\?\").to_string();
+
+    for (id, (tool, args)) in [
+        ("klens_outline", json!({ "path": canonical.clone() })),
+        ("klens_outline", json!({ "path": root.clone() })),
+        ("klens_outline", json!({ "path": format!("{root}/") })),
+        ("klens_map", json!({ "focus": root.clone() })),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let res = call_tool(&mut server, 10 + id as u64, tool, args.clone());
+        assert!(res["error"].is_null(), "{tool} {args}: {res}");
+        assert!(
+            res["result"]["isError"].as_bool() != Some(true),
+            "{tool} {args}: {res}"
+        );
+    }
+}

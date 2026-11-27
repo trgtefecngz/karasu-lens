@@ -112,6 +112,24 @@ To inspect a project without writing anything into it, add `--read-only`. The ca
 `klens` ships native adapters for **Antigravity**, **Claude Code**, and **Codex**, plus a generic
 option.
 
+Once per machine, register `klens` for every installed agent so it works in every project:
+
+```bash
+klens setup             # user-scope MCP registration (supports --dry-run; undo: klens disconnect --host all)
+```
+
+For Claude Code it also adds a short, marker-delimited guide to `~/.claude/CLAUDE.md` saying
+when a `klens` tool beats the built-in one (your own text in that file is kept; `disconnect`
+removes only the guide), and a `PreToolUse` hook in `~/.claude/settings.json` that runs simple,
+known-noisy commands (`cargo test`, `npm install`, `pytest`, `git log`, ...) through
+`klens run`. Commands with any shell syntax (pipes, `&&`, quotes, `$`, redirects), commands
+named in your own Claude Code permission rules, and projects in `read_only` or `paused` mode are
+left untouched; the hook never approves a command on its own, and `KLENS_HOOKS=off` disables it.
+The index cache stays in the project's `.klens/cache/` folder, which
+ignores itself, so a project you only browse shows no new files in `git status`.
+
+Per project, for skills, hooks, and `.gitignore` entries:
+
 ```bash
 klens attach            # register the project and add .klens/ entries to .gitignore
 klens init --host auto  # install the MCP server and skills for detected agents (supports --dry-run)

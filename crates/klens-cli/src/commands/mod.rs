@@ -1,5 +1,6 @@
 pub(crate) mod adapters;
 pub(crate) mod blueprint;
+pub(crate) mod claude_hook;
 pub(crate) mod code;
 pub(crate) mod common;
 pub(crate) mod exec;

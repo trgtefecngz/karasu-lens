@@ -81,6 +81,33 @@ impl ClaudeCodeAdapter {
         self.home_dir.join(".claude.json")
     }
 
+    /// Claude Code's user instructions, read in every project (`~/.claude/CLAUDE.md`).
+    pub fn global_guide_path(&self) -> PathBuf {
+        self.global_dir().join("CLAUDE.md")
+    }
+
+    /// Claude Code's user settings, applied in every project (`~/.claude/settings.json`).
+    pub fn global_settings_path(&self) -> PathBuf {
+        self.global_dir().join("settings.json")
+    }
+
+    /// Install the managed `PreToolUse` (Bash) hook in the user settings: `klens hook pre-tool`
+    /// routes simple noisy commands through `klens run`. Other hooks and keys are kept.
+    pub fn install_global_pre_tool_hook(
+        &self,
+        binary_path: &Path,
+        dry_run: bool,
+    ) -> Result<FileOpOutcome, AdapterError> {
+        upsert_claude_hooks(
+            &self.global_settings_path(),
+            binary_path,
+            false,
+            true,
+            dry_run,
+            false,
+        )
+    }
+
     pub fn project_mcp_path(project_root: &Path) -> PathBuf {
         project_root.join(".mcp.json")
     }
@@ -369,6 +396,56 @@ impl HostAdapter for ClaudeCodeAdapter {
             ));
         }
 
+        // The `klens setup` hook in `~/.claude/settings.json` (only klens-managed entries go).
+        // A file klens cannot parse (the user's own edits) is left alone and reported; it must
+        // not stop the rest of the undo (guide, other hosts).
+        let settings = self.global_settings_path();
+        let hooks_out = match remove_claude_hooks(&settings, ctx.dry_run, false) {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                report.notes.push(format!(
+                    "WARNING: left {} unchanged ({err}); remove the klens hook there by hand",
+                    settings.display()
+                ));
+                FileOpOutcome::Unchanged
+            }
+        };
+        if hooks_out.is_planned_change() {
+            report.files_touched.push(settings.clone());
+            if hooks_out.mutated_disk() {
+                report.changed = true;
+            }
+            let prefix = if ctx.dry_run { "[dry-run] would " } else { "" };
+            report.notes.push(format!(
+                "{prefix}removed the klens hook from {}",
+                settings.display()
+            ));
+        }
+
+        // And the `klens setup` guide block in `~/.claude/CLAUDE.md` (the user's own text stays).
+        let guide = self.global_guide_path();
+        let guide_out = match remove_marked_file(&guide, MarkerStyle::Html, ctx.dry_run, false) {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                report.notes.push(format!(
+                    "WARNING: left {} unchanged ({err}); remove the klens guide there by hand",
+                    guide.display()
+                ));
+                FileOpOutcome::Unchanged
+            }
+        };
+        if guide_out.is_planned_change() {
+            report.files_touched.push(guide.clone());
+            if guide_out.mutated_disk() {
+                report.changed = true;
+            }
+            let prefix = if ctx.dry_run { "[dry-run] would " } else { "" };
+            report.notes.push(format!(
+                "{prefix}removed the klens guide from {}",
+                guide.display()
+            ));
+        }
+
         Ok(report)
     }
 
@@ -567,7 +644,10 @@ fn upsert_claude_hooks_once(
                 "hooks": [
                     {
                         "type": "command",
-                        "command": format!("\"{bin}\" doctor --project ."),
+                        // `|| exit 0`: an unknown subcommand (older klens at this path) exits 2,
+                        // which Claude Code treats as "block this Bash call". Never block.
+                        "command": format!("\"{bin}\" hook pre-tool || exit 0"),
+                        "timeout": 10,
                         KLENS_MANAGED_KEY: true
                     }
                 ]

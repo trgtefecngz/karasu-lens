@@ -265,19 +265,39 @@ pub(crate) fn resolve_root_and_rel(
     Ok((project_root, Some(rel)))
 }
 
+/// Project root for an absolute file path given without `--root`.
+///
+/// 1. The current folder, when the file is inside it AND the folder is a project itself
+///    (agents run from the project root; a plain parent such as `C:\dev` is never chosen).
+/// 2. The nearest folder holding `.klens` or `.git` — a repository, not a sub-package of it
+///    (picking `crates/x/Cargo.toml` used to re-root reads and create a nested `.klens/`).
+/// 3. The nearest package manifest, then the file's own folder.
 fn infer_project_root_for_file(file_path: &Path) -> PathBuf {
+    const REPOSITORY_MARKERS: &[&str] = &[".klens", ".git"];
+    const PACKAGE_MARKERS: &[&str] = &["Cargo.toml", "package.json", "pyproject.toml", "go.mod"];
     let parent = file_path.parent().unwrap_or_else(|| Path::new("."));
-    const MARKERS: &[&str] = &[
-        ".git",
-        ".klens",
-        "Cargo.toml",
-        "package.json",
-        "pyproject.toml",
-        "go.mod",
-    ];
-    for ancestor in parent.ancestors() {
-        if MARKERS.iter().any(|m| ancestor.join(m).exists()) {
-            return ancestor.to_path_buf();
+
+    if let Ok(cwd) = std::env::current_dir()
+        && let (Ok(cwd), Ok(file)) = (
+            std::fs::canonicalize(&cwd),
+            std::fs::canonicalize(file_path),
+        )
+        && file.starts_with(&cwd)
+        && !klens_core::is_unsafe_project_root(&cwd)
+        && REPOSITORY_MARKERS
+            .iter()
+            .chain(PACKAGE_MARKERS)
+            .any(|m| cwd.join(m).exists())
+    {
+        return cwd;
+    }
+
+    for markers in [REPOSITORY_MARKERS, PACKAGE_MARKERS] {
+        if let Some(found) = parent
+            .ancestors()
+            .find(|dir| markers.iter().any(|m| dir.join(m).exists()))
+        {
+            return found.to_path_buf();
         }
     }
     parent.to_path_buf()

@@ -20,6 +20,11 @@ pub(crate) struct HookArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum HookSubcommand {
+    /// Claude Code `PreToolUse` hook: reads the hook JSON on stdin and routes simple noisy
+    /// commands (`cargo test`, `npm install`, ...) through `klens run`. Silent otherwise.
+    /// Disable with `KLENS_HOOKS=off`.
+    PreTool,
+
     /// Inspect `pre-commit` hook status and binary freshness (strictly read-only).
     Status {
         /// Target project root directory (defaults to current working directory).
@@ -83,6 +88,7 @@ fn resolve_binary(explicit: Option<PathBuf>) -> Result<PathBuf, CliError> {
 
 pub(crate) fn run_hook_cmd(args: HookArgs) -> Result<String, CliError> {
     match args.action {
+        HookSubcommand::PreTool => Ok(super::claude_hook::run_pre_tool_hook()),
         HookSubcommand::Status {
             project,
             binary,
