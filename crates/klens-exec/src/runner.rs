@@ -594,7 +594,12 @@ mod tests {
 
     #[test]
     fn script_lookup_skips_empty_and_relative_path_entries() {
-        let base = std::env::temp_dir().join(format!("klens-path-lookup-{}", std::process::id()));
+        // Keep the fixture on the same drive as the current directory (the crate dir under
+        // `cargo test`): on CI the temp dir and the checkout can sit on different drives, where
+        // no relative path exists and the "relative" entry would silently become absolute.
+        let base = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/klens-test-tmp")
+            .join(format!("klens-path-lookup-{}", std::process::id()));
         let planted = base.join("repo-bin");
         let trusted = base.join("trusted-bin");
         std::fs::create_dir_all(&planted).unwrap();
@@ -608,6 +613,7 @@ mod tests {
         let relative = pathdiff_lexical(&planted, &cwd);
         let path_var =
             std::env::join_paths([PathBuf::new(), relative.clone(), trusted.clone()]).unwrap();
+        let relative_is_relative = relative.is_relative();
         let relative_resolves = relative.join("klenstool.cmd").is_file();
         let found = resolve_script_in_path_var("klenstool", &path_var);
 
@@ -616,8 +622,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
 
         assert!(
-            relative_resolves,
-            "test setup: the relative entry must reach the planted file"
+            relative_is_relative && relative_resolves,
+            "test setup: the relative entry must be relative and reach the planted file"
         );
         assert_eq!(found, Some(trusted.join("klenstool.cmd")));
         assert_eq!(none, None);
