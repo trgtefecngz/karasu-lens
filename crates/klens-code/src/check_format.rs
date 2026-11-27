@@ -43,6 +43,9 @@ pub fn format_check_text(envelope: &ProvenanceEnvelope<CheckPayload>) -> String 
         if hidden > 0 {
             let _ = writeln!(out, "{}: +{hidden} more problems not listed", file.path);
         }
+        if let Some(reason) = &file.reason {
+            let _ = writeln!(out, "{}: {reason}", file.path);
+        }
     }
 
     // Group not-checked / skipped files by (status, trust, reason) to keep diff mode quiet.

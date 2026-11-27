@@ -14,6 +14,9 @@ use klens_core::{
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Language, Node};
 
+use crate::check_quirks::{
+    is_header_path, is_jsonc_config_path, near_preprocessor_conditional, strip_jsonc,
+};
 use crate::diff_check::changed_paths;
 use crate::error::CodeError;
 use crate::git::{is_git_repo, show_staged_file};
@@ -408,7 +411,7 @@ fn check_source(
             None => Err(format!("no grammar registered for `{language_id}`")),
         }
     };
-    let tree = match tree {
+    let mut tree = match tree {
         Ok(tree) => tree,
         Err(reason) => {
             return not_checked(
@@ -420,8 +423,39 @@ fn check_source(
         }
     };
 
+    // A `.h` header may be C++: when the C grammar fails, accept a clean C++ parse.
+    let mut language = language_id;
+    if language_id == "c" && tree.root_node().has_error() && is_header_path(path) {
+        let cpp: Language = tree_sitter_cpp::LANGUAGE.into();
+        if let Ok(cpp_tree) = parse_tree_lenient(&cpp, &source)
+            && !cpp_tree.root_node().has_error()
+        {
+            tree = cpp_tree;
+            language = "cpp";
+        }
+    }
+
     let lines: Vec<&str> = source.lines().collect();
-    let nodes = collect_syntax_problem_nodes(tree.root_node());
+    let mut nodes = collect_syntax_problem_nodes(tree.root_node());
+
+    // C/C++ grammars parse without running the preprocessor, so `#if`/`#ifdef` blocks that split
+    // a construct (e.g. the `extern "C" {` guard) produce errors that are not real. Never report
+    // those as certain errors.
+    let mut preprocessor_doubtful = 0usize;
+    if matches!(language, "c" | "cpp") {
+        let before = nodes.len();
+        nodes.retain(|n| !near_preprocessor_conditional(*n));
+        preprocessor_doubtful = before - nodes.len();
+        if nodes.is_empty() && preprocessor_doubtful > 0 {
+            return not_checked(
+                path,
+                TrustLevel::UnparsedFallback,
+                Some(language.to_string()),
+                "#if/#ifdef blocks confuse the C/C++ parser",
+            );
+        }
+    }
+
     let problems_total = nodes.len();
     let problems: Vec<SyntaxProblem> = nodes
         .into_iter()
@@ -437,10 +471,12 @@ fn check_source(
             CheckFileStatus::SyntaxErrors
         },
         trust: TrustLevel::VerifiedAst,
-        language: Some(language_id.to_string()),
+        language: Some(language.to_string()),
         problems,
         problems_total,
-        reason: None,
+        reason: (preprocessor_doubtful > 0).then(|| {
+            format!("{preprocessor_doubtful} more possible errors next to #if/#ifdef not listed")
+        }),
     }
 }
 
@@ -562,6 +598,20 @@ fn enclosing_symbol(node: Node<'_>, source: &str) -> Option<String> {
     Some(redact_secrets(&joined).text)
 }
 
+/// Strict JSON parse error as `(line, column, message)`, or `None` when valid.
+fn json_failure(source: &str) -> Option<(usize, usize, String)> {
+    serde_json::from_str::<serde_json::Value>(source)
+        .err()
+        .map(|err| {
+            let full = err.to_string();
+            let message = full
+                .rfind(" at line ")
+                .map_or(full.as_str(), |idx| &full[..idx])
+                .to_string();
+            (err.line().max(1), err.column().max(1), message)
+        })
+}
+
 /// JSON and TOML get a strict parser; Markdown and YAML have no validator here.
 fn check_structured_doc(rel: &RelPath, source: &str, redactions: &mut usize) -> CheckedFile {
     let path = rel.as_str();
@@ -572,19 +622,31 @@ fn check_structured_doc(rel: &RelPath, source: &str, redactions: &mut usize) -> 
     let lines: Vec<&str> = source.lines().collect();
 
     let (language, failure): (&str, Option<(usize, usize, String)>) = match ext.as_str() {
-        "json" => (
-            "json",
-            serde_json::from_str::<serde_json::Value>(source)
-                .err()
-                .map(|err| {
-                    let full = err.to_string();
-                    let message = full
-                        .rfind(" at line ")
-                        .map_or(full.as_str(), |idx| &full[..idx])
-                        .to_string();
-                    (err.line().max(1), err.column().max(1), message)
-                }),
-        ),
+        "json" => match json_failure(source) {
+            None => ("json", None),
+            Some(strict_err) => {
+                // JSON with comments / trailing commas (JSONC) is normal for tsconfig, VS Code
+                // settings, devcontainers...: validate those as JSONC instead of failing them.
+                let (stripped, had_comments) = strip_jsonc(source);
+                let config = is_jsonc_config_path(path);
+                if !had_comments && !config {
+                    ("json", Some(strict_err))
+                } else {
+                    match json_failure(&stripped) {
+                        None if config => ("jsonc", None),
+                        None => {
+                            return not_checked(
+                                path,
+                                TrustLevel::UnparsedFallback,
+                                Some("jsonc".to_string()),
+                                "JSON with comments; fine only if its reader accepts JSONC",
+                            );
+                        }
+                        Some(err) => ("jsonc", Some(err)),
+                    }
+                }
+            }
+        },
         "toml" => (
             "toml",
             toml::from_str::<toml::Value>(source).err().map(|err| {

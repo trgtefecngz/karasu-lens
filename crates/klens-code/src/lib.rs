@@ -7,6 +7,7 @@
 
 pub mod check;
 mod check_format;
+mod check_quirks;
 pub mod deps;
 pub mod diff_check;
 mod diff_parse;
