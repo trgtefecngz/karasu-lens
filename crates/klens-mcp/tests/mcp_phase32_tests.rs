@@ -174,6 +174,100 @@ fn tools_list_keeps_8_tools_under_1090_tokens_and_updated_schemas() {
         .unwrap();
     assert!(target_desc.contains("diff"));
     assert!(target_desc.contains("diff:staged"));
+    // `budget` is advertised without a description (tools/list token lock); the omission footer
+    // of a capped result names it, so an agent learns it exactly when it matters.
+    assert_eq!(
+        impact_tool["inputSchema"]["properties"]["budget"],
+        json!({ "type": "integer" })
+    );
+    assert!(
+        impact_tool["description"]
+            .as_str()
+            .unwrap()
+            .starts_with("Before edits")
+    );
+    // Deterministic: a second listing is byte-identical.
+    let again = server
+        .handle_raw_line(
+            &json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }).to_string(),
+        )
+        .unwrap();
+    assert_eq!(again, list_raw);
+}
+
+#[test]
+fn klens_impact_budget_bounds_text_and_json_with_an_honest_tail() {
+    let proj = Sandbox::new("impact-budget");
+    let aux = Sandbox::new("impact-budget-aux");
+    proj.write(
+        "Cargo.toml",
+        "[package]\nname = \"impact_budget\"\nversion = \"0.1.0\"\n",
+    );
+    proj.write(
+        "src/core.rs",
+        "pub fn shared_helper(x: i32) -> i32 {\n    x + 1\n}\n",
+    );
+    let mut lib = String::from("pub mod core;\n");
+    for i in 0..80 {
+        lib.push_str(&format!("pub mod user_{i:03};\n"));
+        proj.write(
+            &format!("src/user_{i:03}.rs"),
+            &format!(
+                "use crate::core::shared_helper;\n\npub fn caller_{i:03}() -> i32 {{\n    shared_helper({i})\n}}\n"
+            ),
+        );
+    }
+    proj.write("src/lib.rs", &lib);
+    let mut server = new_server(&proj, &aux);
+
+    let text_of = |resp: &Value| -> String {
+        assert!(resp["result"].get("isError").is_none(), "{resp}");
+        resp["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    let small = text_of(&call_tool(
+        &mut server,
+        2,
+        "klens_impact",
+        json!({ "target": "src/core.rs", "budget": 300 }),
+    ));
+    assert!(estimate_tokens(&small) <= 300, "{small}");
+    let tail = small.lines().last().unwrap();
+    assert!(
+        tail.contains("more files") && tail.contains("at d3+"),
+        "{tail}"
+    );
+
+    // JSON: an explicit budget trims whole files and counts them; no budget keeps every hit.
+    let bounded = text_of(&call_tool(
+        &mut server,
+        3,
+        "klens_impact",
+        json!({ "target": "src/core.rs", "budget": 400, "format": "json" }),
+    ));
+    assert!(estimate_tokens(&bounded) <= 400, "{bounded}");
+    let bounded: Value = serde_json::from_str(&bounded).unwrap();
+    let total = bounded["data"]["affected_files_count"].as_u64().unwrap();
+    let omitted = bounded["data"]["omitted_files"].as_u64().unwrap();
+    assert!(omitted > 0 && omitted < total, "{bounded}");
+    let full = text_of(&call_tool(
+        &mut server,
+        5,
+        "klens_impact",
+        json!({ "target": "src/core.rs", "format": "json" }),
+    ));
+    assert!(!full.contains("omitted_files"));
+
+    let bad = call_tool(
+        &mut server,
+        4,
+        "klens_impact",
+        json!({ "target": "src/core.rs", "budget": "lots" }),
+    );
+    assert_eq!(bad["error"]["code"], -32602, "{bad}");
 }
 
 #[test]

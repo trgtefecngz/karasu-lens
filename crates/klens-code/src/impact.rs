@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fmt::Write as _;
 
 use klens_core::{
     EdgeConfidence, EdgeRelation, ProvenanceEnvelope, RelPath, SymbolInfo, SymbolKind, TrustLevel,
@@ -78,10 +77,46 @@ pub struct ImpactPayload {
     pub target_symbol: Option<String>,
     pub affected_files_count: usize,
     pub hits: Vec<ImpactHit>,
+    /// Affected files left out of `hits` by an explicit `budget`/`limit` (0 = nothing omitted).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub omitted_files: usize,
+    /// Hits left out of `hits` by an explicit `budget`/`limit` (0 = nothing omitted).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub omitted_hits: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<ImpactCandidate>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+// serde's `skip_serializing_if` passes a reference.
+const fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+impl ImpactHit {
+    /// Why this hit exists, without the `path:Lnn` location the hit already carries.
+    ///
+    /// Graph edges record evidence as `path:Lnn`, and symbol scans as `path:Lnn (reason)`; both
+    /// repeat `path`/`line`. Returns `None` when nothing but the location is left.
+    pub fn evidence_reason(&self) -> Option<&str> {
+        let mut rest = self.evidence.trim();
+        if let Some(after_path) = rest.strip_prefix(self.path.as_str()) {
+            rest = after_path;
+            if let Some(line) = self.line
+                && let Some(after_line) = rest.strip_prefix(&format!(":L{line}"))
+            {
+                rest = after_line;
+            }
+        }
+        let rest = rest.trim();
+        let rest = rest
+            .strip_prefix('(')
+            .and_then(|r| r.strip_suffix(')'))
+            .unwrap_or(rest)
+            .trim();
+        (!rest.is_empty()).then_some(rest)
+    }
 }
 
 /// Compute the deterministic blast radius for a file path or symbol target.
@@ -105,6 +140,8 @@ pub fn analyze_impact(
                 target_path: None,
                 target_symbol: None,
                 affected_files_count: 0,
+                omitted_files: 0,
+                omitted_hits: 0,
                 hits: Vec::new(),
                 candidates: Vec::new(),
                 message: Some("empty impact target".to_string()),
@@ -179,6 +216,8 @@ pub fn analyze_impact(
                 target_path: None,
                 target_symbol: None,
                 affected_files_count: 0,
+                omitted_files: 0,
+                omitted_hits: 0,
                 hits: Vec::new(),
                 candidates,
                 message: Some(format!(
@@ -198,6 +237,8 @@ pub fn analyze_impact(
             target_path: None,
             target_symbol: None,
             affected_files_count: 0,
+            omitted_files: 0,
+            omitted_hits: 0,
             hits: Vec::new(),
             candidates: Vec::new(),
             message: Some(format!("no indexed file or symbol matched `{query}`")),
@@ -279,6 +320,8 @@ fn compute_file_impact(
         target_path: Some(target_file.to_string()),
         target_symbol: None,
         affected_files_count,
+        omitted_files: 0,
+        omitted_hits: 0,
         hits,
         candidates: Vec::new(),
         message: None,
@@ -312,6 +355,8 @@ fn finish_symbol_impact(
                 target_path: None,
                 target_symbol: None,
                 affected_files_count: 0,
+                omitted_files: 0,
+                omitted_hits: 0,
                 hits: Vec::new(),
                 candidates: Vec::new(),
                 message: Some(format!("symbol `{query}` not found")),
@@ -348,6 +393,8 @@ fn finish_symbol_impact(
                 target_path: None,
                 target_symbol: None,
                 affected_files_count: 0,
+                omitted_files: 0,
+                omitted_hits: 0,
                 hits: Vec::new(),
                 candidates,
                 message: Some(format!(
@@ -524,6 +571,8 @@ fn finish_symbol_impact(
         target_path: Some(target_file.to_string()),
         target_symbol: Some(target_qname.to_string()),
         affected_files_count,
+        omitted_files: 0,
+        omitted_hits: 0,
         hits,
         candidates: Vec::new(),
         message: None,
@@ -652,60 +701,4 @@ fn dedup_and_sort_hits(mut hits: Vec<ImpactHit>) -> Vec<ImpactHit> {
     let mut seen: BTreeSet<(String, Option<usize>, EdgeRelation, usize)> = BTreeSet::new();
     hits.retain(|h| seen.insert((h.path.clone(), h.line, h.relation, h.distance)));
     hits
-}
-
-/// Render an impact analysis envelope into deterministic plain text.
-pub fn format_impact_text(envelope: &ProvenanceEnvelope<ImpactPayload>) -> String {
-    let data = &envelope.data;
-    let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "[{}] impact query=\"{}\" status={:?} affected_files={} hits={}",
-        crate::trust_label(envelope.trust),
-        data.query,
-        data.status,
-        data.affected_files_count,
-        data.hits.len()
-    );
-
-    if let Some(tp) = &data.target_path {
-        match &data.target_symbol {
-            Some(ts) => {
-                let _ = writeln!(out, "TARGET: {tp}#{ts}");
-            }
-            None => {
-                let _ = writeln!(out, "TARGET: {tp}");
-            }
-        }
-    }
-
-    for w in &envelope.warnings {
-        let _ = writeln!(out, "WARNING: {w}");
-    }
-
-    match data.status {
-        ImpactStatus::Ok => crate::impact_format::write_grouped_hits(&mut out, &data.hits),
-        ImpactStatus::AmbiguousTarget => {
-            if let Some(msg) = &data.message {
-                let _ = writeln!(out, "AMBIGUOUS_TARGET: {msg}");
-            }
-            for c in &data.candidates {
-                match (&c.qualified_name, c.start_line, c.end_line) {
-                    (Some(q), Some(s), Some(e)) => {
-                        let _ = writeln!(out, "  - {}#{} [L{s}-L{e}]", c.path, q);
-                    }
-                    _ => {
-                        let _ = writeln!(out, "  - {}", c.path);
-                    }
-                }
-            }
-        }
-        ImpactStatus::NotFound => {
-            if let Some(msg) = &data.message {
-                let _ = writeln!(out, "{msg}");
-            }
-        }
-    }
-
-    out
 }

@@ -19,6 +19,9 @@ use crate::graph::build_code_graph;
 use crate::impact::{ImpactHit, compute_direct_and_transitive_file_hits};
 use crate::index::{CodeIndex, MAX_INDEXABLE_BYTES, is_binary_bytes};
 
+/// Impacted files listed in the text form before the rest is counted (JSON keeps all).
+pub const MAX_DIFF_IMPACT_FILES_TEXT: usize = 40;
+
 /// Category of security or architectural alert produced by `klens diff-check`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -528,11 +531,29 @@ pub fn format_diff_check_text(envelope: &ProvenanceEnvelope<DiffCheckPayload>) -
 
     if !data.impacted_files.is_empty() {
         let _ = writeln!(out, "\n## Blast Radius (Impacted Files)");
-        for hit in &data.impacted_files {
+        // Already one hit per file, closest first. List the closest and count the rest.
+        for hit in data.impacted_files.iter().take(MAX_DIFF_IMPACT_FILES_TEXT) {
+            let loc = match hit.line {
+                Some(line) => format!("{}:L{line}", hit.path),
+                None => hit.path.clone(),
+            };
+            let reason = hit
+                .evidence_reason()
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default();
             let _ = writeln!(
                 out,
-                "  - [d={} | {:?}] {} ({})",
-                hit.distance, hit.confidence, hit.path, hit.evidence
+                "  - [d={} | {:?}] {loc}{reason}",
+                hit.distance, hit.confidence
+            );
+        }
+        if let Some(rest) = data.impacted_files.get(MAX_DIFF_IMPACT_FILES_TEXT..) {
+            let deep = rest.iter().filter(|h| h.distance >= 3).count();
+            let _ = writeln!(
+                out,
+                "  +{} more impacted files: {} at d1-2, {deep} at d3+ (JSON output lists all).",
+                rest.len(),
+                rest.len() - deep
             );
         }
     }

@@ -5,11 +5,12 @@ use std::fs;
 use std::time::Duration;
 
 use klens_code::{
-    DEFAULT_FIND_LIMIT, DEFAULT_MAP_BUDGET_TOKENS, DiffCheckOptions, LineRange, ReadInclude,
-    ReadTarget, analyze_impact, attach_code_context_to_batch, attach_code_context_to_read,
-    build_project_map_focused, find_in_workspace, format_batch_read_text, format_diff_check_text,
-    format_find_text, format_impact_text, format_map_text, format_outline_text, format_read_text,
-    outline_path, read_batch, read_lines, read_symbol, run_diff_check_with_options,
+    DEFAULT_FIND_LIMIT, DEFAULT_MAP_BUDGET_TOKENS, DiffCheckOptions, ImpactOutputLimits, LineRange,
+    ReadInclude, ReadTarget, analyze_impact, attach_code_context_to_batch,
+    attach_code_context_to_read, bound_impact_payload, build_project_map_focused,
+    find_in_workspace, format_batch_read_text, format_diff_check_text, format_find_text,
+    format_impact_text_with, format_map_text, format_outline_text, format_read_text, outline_path,
+    read_batch, read_lines, read_symbol, run_diff_check_with_options,
 };
 use klens_core::{ProjectRoot, RelPath, SymbolInfo, estimate_tokens, estimate_tokens_from_bytes};
 use klens_exec::{
@@ -425,12 +426,24 @@ fn handle_impact(ctx: &ToolContext<'_>, args: &Value) -> Result<ToolExecution, M
         });
     }
 
+    // Only `budget` is advertised (the tools/list token lock); a file cap is CLI `--limit`.
+    let budget = parse_optional_usize(args, "budget")?;
+    let limits = ImpactOutputLimits::from_request(budget, None);
+
     let mut index = open_index(ctx)?;
-    let envelope = analyze_impact(&mut index, target)?;
+    let mut envelope = analyze_impact(&mut index, target)?;
 
     let text = match format {
-        OutputFormat::Text => format_impact_text(&envelope).trim_end().to_string(),
-        OutputFormat::Json => envelope.to_deterministic_json()?,
+        OutputFormat::Text => format_impact_text_with(&envelope, limits)
+            .trim_end()
+            .to_string(),
+        OutputFormat::Json => {
+            // JSON is the full list unless the caller asked for a cap explicitly.
+            if budget.is_some() {
+                bound_impact_payload(&mut envelope.data, limits);
+            }
+            envelope.to_deterministic_json()?
+        }
     };
     let filtered_est = estimate_tokens(&text) as u64;
     let raw_est = raw_tokens_for_rel_paths(

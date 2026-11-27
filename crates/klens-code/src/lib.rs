@@ -47,7 +47,10 @@ pub use graph::{
 pub use health::{HealthCheck, HealthPayload, TrafficLight, format_health_text, run_health_check};
 pub use impact::{
     ImpactCandidate, ImpactHit, ImpactPayload, ImpactStatus, ImpactTargetKind, analyze_impact,
-    format_impact_text,
+};
+pub use impact_format::{
+    DEFAULT_IMPACT_BUDGET_TOKENS, ImpactOutputLimits, MIN_IMPACT_BUDGET_TOKENS,
+    bound_impact_payload, format_impact_text, format_impact_text_with,
 };
 pub use index::{
     CodeIndex, FileSyncOutcome, MAX_INDEXABLE_BYTES, SyncStats, default_readonly_cache_root,

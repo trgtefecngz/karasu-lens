@@ -4,12 +4,13 @@ use std::process::ExitCode;
 use clap::{Args, ValueEnum};
 use klens_code::{
     BatchReadData, CodeError, CodeIndex, DEFAULT_FIND_LIMIT, DEFAULT_MAP_BUDGET_TOKENS, DiffAlert,
-    DiffAlertKind, DiffCheckOptions, HealthCheck, LineRange, MAX_CONTEXT_MEMORY_NOTES, ReadInclude,
-    ReadMemoryNote, ReadResultData, ReadStatus, ReadTarget, TrafficLight, analyze_impact,
-    attach_code_context_to_batch, attach_code_context_to_read, build_code_graph,
-    build_project_map_focused, find_in_workspace, format_batch_read_text, format_diff_check_text,
-    format_find_text, format_graph_text, format_health_text, format_impact_text, format_map_text,
-    format_outline_text, format_read_text, outline_path, read_batch, read_lines, read_symbol,
+    DiffAlertKind, DiffCheckOptions, DiffCheckPayload, HealthCheck, ImpactOutputLimits, LineRange,
+    MAX_CONTEXT_MEMORY_NOTES, ReadInclude, ReadMemoryNote, ReadResultData, ReadStatus, ReadTarget,
+    TrafficLight, analyze_impact, attach_code_context_to_batch, attach_code_context_to_read,
+    bound_impact_payload, build_code_graph, build_project_map_focused, find_in_workspace,
+    format_batch_read_text, format_diff_check_text, format_find_text, format_graph_text,
+    format_health_text, format_impact_text_with, format_map_text, format_outline_text,
+    format_read_text, outline_path, read_batch, read_lines, read_symbol,
     run_diff_check_with_options, run_health_check, sanitize_memory_snippet,
 };
 use klens_core::{
@@ -138,10 +139,20 @@ pub(crate) struct FindArgs {
 #[command(after_help = "\
 Examples:
   klens impact src/auth.rs
-  klens impact \"src/auth.rs#verify_token\"")]
+  klens impact \"src/auth.rs#verify_token\"
+  klens impact diff --budget 4000")]
 pub(crate) struct ImpactArgs {
-    /// Target relative file path, symbol name, qualified symbol, or `<path>#<symbol>`.
+    /// Target relative file path, symbol name, qualified symbol, `<path>#<symbol>`,
+    /// `diff` (working tree changes), or `diff:staged`.
     pub target: String,
+
+    /// Max tokens of output (default 1500; 0 = no cap). With `--json`, caps the hit list.
+    #[arg(long)]
+    pub budget: Option<usize>,
+
+    /// Max affected files listed. With `--json`, caps the hit list.
+    #[arg(long)]
+    pub limit: Option<usize>,
 
     /// Zero-footprint mode: never writes `.klens/` into the target project.
     #[arg(long)]
@@ -323,13 +334,33 @@ pub(crate) fn run_find(args: FindArgs) -> Result<String, CodeError> {
 
 pub(crate) fn run_impact(args: ImpactArgs) -> Result<String, CodeError> {
     let project_root = resolve_project_root(None, args.root.as_deref())?;
+    let target = args.target.trim();
+
+    // Same targets as the MCP tool: `diff` / `diff:staged` run the git diff blast radius.
+    if target == "diff" || target == "diff:staged" {
+        let envelope =
+            diff_check_with_memory(&project_root, args.read_only, target == "diff:staged")?;
+        return if args.json {
+            Ok(envelope.to_deterministic_json_pretty()?)
+        } else {
+            Ok(format_diff_check_text(&envelope).trim_end().to_string())
+        };
+    }
+
     let mut index = CodeIndex::open(project_root, args.read_only)?;
-    let envelope = analyze_impact(&mut index, &args.target)?;
+    let mut envelope = analyze_impact(&mut index, target)?;
+    let limits = ImpactOutputLimits::from_request(args.budget, args.limit);
 
     if args.json {
+        // JSON is the full list unless a cap was asked for explicitly.
+        if args.budget.is_some() || args.limit.is_some() {
+            bound_impact_payload(&mut envelope.data, limits);
+        }
         Ok(envelope.to_deterministic_json_pretty()?)
     } else {
-        Ok(format_impact_text(&envelope).trim_end().to_string())
+        Ok(format_impact_text_with(&envelope, limits)
+            .trim_end()
+            .to_string())
     }
 }
 
@@ -347,36 +378,7 @@ pub(crate) fn run_graph(args: GraphArgs) -> Result<String, CodeError> {
 
 pub(crate) fn run_diff_check_cmd(args: DiffCheckArgs) -> Result<CliOutcome, CodeError> {
     let project_root = resolve_project_root(args.path.as_deref(), args.root.as_deref())?;
-    let mut index = CodeIndex::open(project_root.clone(), args.read_only)?;
-    let mut envelope = run_diff_check_with_options(
-        &mut index,
-        DiffCheckOptions {
-            staged_only: args.staged,
-        },
-    )?;
-
-    // Integrate verifiable `.klens/memory/` staleness detection without coupling `klens-code` to `klens-memory`.
-    if project_root.root().join(MEMORY_DIR_REL).is_dir() {
-        let mut resolver = BorrowedCodeSymbolResolver::new(&mut index);
-        if let Ok(verify_env) = verify_all_notes(&project_root, &mut resolver) {
-            for warning in verify_env.warnings {
-                envelope = envelope.with_warning(warning);
-            }
-            for stale in verify_env.data.stale_notes {
-                let reasons = stale.stale_reasons.join(", ");
-                envelope.data.add_alert(DiffAlert {
-                    kind: DiffAlertKind::StaleMemory,
-                    severity: CheckSeverity::Warning,
-                    path: stale.rel_path,
-                    line: None,
-                    message: format!(
-                        "STALE MEMORY: `{}` ({}) — {} (run `klens memory refresh {}`)",
-                        stale.id, stale.title, reasons, stale.id
-                    ),
-                });
-            }
-        }
-    }
+    let envelope = diff_check_with_memory(&project_root, args.read_only, args.staged)?;
 
     let rendered = if args.json {
         envelope.to_deterministic_json_pretty()?
@@ -400,6 +402,41 @@ pub(crate) fn run_diff_check_cmd(args: DiffCheckArgs) -> Result<CliOutcome, Code
             ExitCode::SUCCESS
         },
     })
+}
+
+/// `git diff` check plus `.klens/memory/` staleness alerts (shared by `diff-check` and `impact diff`).
+fn diff_check_with_memory(
+    project_root: &ProjectRoot,
+    read_only: bool,
+    staged_only: bool,
+) -> Result<ProvenanceEnvelope<DiffCheckPayload>, CodeError> {
+    let mut index = CodeIndex::open(project_root.clone(), read_only)?;
+    let mut envelope = run_diff_check_with_options(&mut index, DiffCheckOptions { staged_only })?;
+
+    // Integrate verifiable `.klens/memory/` staleness detection without coupling `klens-code` to `klens-memory`.
+    if project_root.root().join(MEMORY_DIR_REL).is_dir() {
+        let mut resolver = BorrowedCodeSymbolResolver::new(&mut index);
+        if let Ok(verify_env) = verify_all_notes(project_root, &mut resolver) {
+            for warning in verify_env.warnings {
+                envelope = envelope.with_warning(warning);
+            }
+            for stale in verify_env.data.stale_notes {
+                let reasons = stale.stale_reasons.join(", ");
+                envelope.data.add_alert(DiffAlert {
+                    kind: DiffAlertKind::StaleMemory,
+                    severity: CheckSeverity::Warning,
+                    path: stale.rel_path,
+                    line: None,
+                    message: format!(
+                        "STALE MEMORY: `{}` ({}) — {} (run `klens memory refresh {}`)",
+                        stale.id, stale.title, reasons, stale.id
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(envelope)
 }
 
 pub(crate) fn run_health_cmd(args: HealthArgs) -> Result<String, CodeError> {
