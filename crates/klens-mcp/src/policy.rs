@@ -21,7 +21,7 @@ pub fn is_read_only_tool(tool_name: &str) -> bool {
     matches!(
         tool_name,
         "klens_map" | "klens_find" | "klens_outline" | "klens_read" | "klens_impact"
-    )
+    ) || tool_name == "klens_check"
 }
 
 /// Returns `true` if a specific `(tool_name, arguments)` invocation is strictly read-only.

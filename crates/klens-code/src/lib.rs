@@ -5,6 +5,9 @@
 //! `outline` / `read`, PageRank project map, FTS5 search, code graph,
 //! impact analysis, smart `diff-check`, and project health for Karasu Lens (`klens-code`).
 
+pub mod check;
+mod check_format;
+mod check_quirks;
 pub mod deps;
 pub mod diff_check;
 mod diff_parse;
@@ -25,6 +28,11 @@ pub mod sidecar;
 pub mod store;
 mod store_schema;
 
+pub use check::{
+    CheckFileStatus, CheckPayload, CheckTarget, CheckedFile, MAX_PROBLEMS_PER_FILE, SyntaxProblem,
+    SyntaxProblemKind, check_files,
+};
+pub use check_format::format_check_text;
 pub use deps::{
     DependencyEcosystem, DependencyEntry, DependencyInventory, collect_dependencies,
     diff_added_external_dependencies, is_dependency_manifest, parse_manifest_dependencies,

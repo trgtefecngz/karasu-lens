@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
-const PHASE32_TOOLS_LIST_BUDGET: usize = 1_090;
+const PHASE32_TOOLS_LIST_BUDGET: usize = 1_190;
 
 struct Sandbox {
     dir: PathBuf,
@@ -145,7 +145,7 @@ fn tools_list_keeps_8_tools_under_1090_tokens_and_updated_schemas() {
         .unwrap();
     let list_val: Value = serde_json::from_str(&list_raw).unwrap();
     let tools = list_val["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 8);
+    assert_eq!(tools.len(), 9);
 
     let tokens = estimate_tokens(&list_raw);
     assert!(

@@ -28,6 +28,8 @@ lines.
 - Tests, builds, installs, linters: `klens_run` (passing runs shrink ~85-95%; failures keep every \
 error line and a raw log).
 - Before changing a shared function: `klens_impact` with `path#symbol`.
+- Right after editing code: `klens_check` with the changed paths (or `diff`) to catch syntax \
+errors before running tests.
 - Finding code: `klens_find` (full text and symbols with line numbers).
 - The built-in Read and Grep are fine for files under ~150 lines and when you need the exact text \
 to edit. Absolute paths inside the project are accepted.";

@@ -196,7 +196,7 @@ fn mcp_token_budget_notifications_ids_and_windows_crlf_lf_flush() {
     let list_resp: Value = serde_json::from_str(lines[1]).unwrap();
     assert_eq!(list_resp["id"], "str-list-42");
     let tools = list_resp["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 8);
+    assert_eq!(tools.len(), 9);
 
     let read_only_tools = [
         "klens_map",
@@ -204,6 +204,7 @@ fn mcp_token_budget_notifications_ids_and_windows_crlf_lf_flush() {
         "klens_outline",
         "klens_read",
         "klens_impact",
+        "klens_check",
     ];
     let mutating_tools = ["klens_run", "klens_memory", "klens_blueprint"];
     for tool in tools {
@@ -250,8 +251,8 @@ fn mcp_token_budget_notifications_ids_and_windows_crlf_lf_flush() {
         "tools/list response is {full_list_tokens} tokens, exceeding hard ceiling < {MAX_TOOLS_LIST_TOKENS}"
     );
     assert!(
-        full_list_tokens <= 1_080,
-        "tools/list response is {full_list_tokens} tokens, exceeding target <= 1,080"
+        full_list_tokens <= 1_190,
+        "tools/list response is {full_list_tokens} tokens, exceeding target <= 1,190"
     );
 
     // 3. Explicit null ID echoed verbatim
@@ -868,4 +869,66 @@ fn absolute_project_root_means_the_whole_project() {
             "{tool} {args}: {res}"
         );
     }
+}
+
+/// `klens_check` is a read tool: it works in `read_only` mode (without writing `.klens/cache/`),
+/// reports syntax errors per line, and is blocked like every tool when the project is `paused`.
+#[test]
+fn klens_check_reports_syntax_errors_and_respects_project_modes() {
+    let (proj, aux) = make_sample_project("check-tool");
+    proj.write("src/broken.rs", "fn broken() {\n    let x = (1 + ;\n}\n");
+    let cfg_path = proj.path().join(".klens").join("config.toml");
+    ProjectConfig {
+        mode: ProjectMode::ReadOnly,
+        ..ProjectConfig::default()
+    }
+    .save_atomic(&cfg_path)
+    .unwrap();
+
+    let mut server = new_server(&proj, &aux);
+    let ok = call_tool(
+        &mut server,
+        2,
+        "klens_check",
+        json!({ "paths": ["src/lib.rs"] }),
+    );
+    assert!(ok["error"].is_null(), "{ok}");
+    assert!(ok["result"].get("isError").is_none(), "{ok}");
+    assert_eq!(
+        ok["result"]["content"][0]["text"].as_str().unwrap(),
+        "OK 1 file [VERIFIED_AST]"
+    );
+
+    let broken = call_tool(
+        &mut server,
+        3,
+        "klens_check",
+        json!({ "paths": ["src/lib.rs", "src/broken.rs", ".env"] }),
+    );
+    let text = broken["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("src/broken.rs:2:"), "{text}");
+    assert!(text.contains("[in broken]"), "{text}");
+    assert!(text.contains("FAIL "), "{text}");
+    assert!(!proj.path().join(".klens").join("cache").exists());
+
+    let bad = call_tool(&mut server, 4, "klens_check", json!({ "paths": [] }));
+    assert!(bad.to_string().contains("at least one file"), "{bad}");
+
+    ProjectConfig {
+        mode: ProjectMode::Paused,
+        ..ProjectConfig::default()
+    }
+    .save_atomic(&cfg_path)
+    .unwrap();
+    let denied = call_tool(
+        &mut server,
+        5,
+        "klens_check",
+        json!({ "paths": ["src/lib.rs"] }),
+    );
+    assert_eq!(denied["result"]["isError"], true);
+    assert!(
+        denied.to_string().contains(PROJECT_ACCESS_RESTRICTED),
+        "{denied}"
+    );
 }

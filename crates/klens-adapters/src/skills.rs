@@ -247,6 +247,7 @@ pub fn render_inline_guide_block(
         "- Start with `klens_map` / `klens_outline` before opening full files.".to_string(),
         "- Read surgically via `klens_read` (qualified symbols like `impl Foo::new` or line ranges).".to_string(),
         "- Search cleanly with `klens_find` and check blast radius with `klens_impact` before editing.".to_string(),
+        "- Right after editing, run `klens_check` on the changed files (or `diff`) to catch syntax errors early.".to_string(),
         "- Execute tests/builds through `klens_run` to preserve 100% of error context while filtering noise.".to_string(),
         "- Never guess on `STALE`, `INFERRED`, `AMBIGUOUS_SYMBOL`, or `UNPARSED_FALLBACK` envelopes.".to_string(),
     ];

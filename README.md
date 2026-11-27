@@ -136,7 +136,7 @@ klens init --host auto  # install the MCP server and skills for detected agents 
 klens doctor            # verify the setup
 ```
 
-The MCP server (`klens mcp`) exposes eight tools:
+The MCP server (`klens mcp`) exposes nine tools:
 
 | Tool | Access | Purpose |
 | :--- | :---: | :--- |
@@ -145,6 +145,7 @@ The MCP server (`klens mcp`) exposes eight tools:
 | `klens_outline` | read | AST symbol outline with line ranges |
 | `klens_read` | read | Read by symbol or lines, optionally with imports, memory, and impact |
 | `klens_impact` | read | Blast radius of a file, a symbol, or the current diff |
+| `klens_check` | read | Syntax-check files or the current diff right after an edit |
 | `klens_run` | exec | Run a command with filtered output and error context |
 | `klens_memory` | write | Manage and verify project memory notes |
 | `klens_blueprint` | write | Blueprint decisions, contract, tasks, and handoff |
@@ -207,7 +208,7 @@ Please report vulnerabilities privately. See [SECURITY.md](SECURITY.md).
 
 | Area | Commands |
 | :--- | :--- |
-| Code analysis | `map`, `outline`, `read`, `find`, `impact`, `graph`, `diff-check`, `health` |
+| Code analysis | `map`, `outline`, `read`, `find`, `impact`, `check`, `graph`, `diff-check`, `health` |
 | Terminal and Git safety | `run`, `runs`, `checkpoint`, `checkpoints`, `rollback` |
 | Memory and planning | `memory`, `blueprint`, `handoff` |
 | Agents and setup | `mcp`, `init`, `attach`, `detach`, `detect`, `scan`, `disconnect`, `uninstall`, `doctor` |

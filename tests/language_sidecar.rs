@@ -1666,9 +1666,9 @@ fn t12_constitution_dep_budget_mcp_tools_and_repo_health() {
         "Cargo.lock package budget exceeded: {pkg_count} > 105"
     );
 
-    // 2. MCP tool surface remains fixed at 8 core tools (< 1200 tokens).
+    // 2. MCP tool surface remains fixed at 9 core tools (< 1200 tokens).
     let tools = tool_definitions();
-    assert_eq!(tools.len(), 8, "core MCP tool count must stay fixed at 8");
+    assert_eq!(tools.len(), 9, "core MCP tool count must stay fixed at 9");
     let tools_json = serde_json::to_string(&tools).unwrap();
     let est_tokens = klens_core::estimate_tokens(&tools_json);
     assert!(

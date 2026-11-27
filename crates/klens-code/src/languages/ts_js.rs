@@ -4,7 +4,9 @@ use klens_core::{
 };
 use tree_sitter::{Node, Tree};
 
-use crate::languages::common::{line_range, node_text, parse_tree_strict, signature_until};
+use crate::languages::common::{
+    line_range, node_text, parse_tree_lenient, parse_tree_strict, signature_until,
+};
 
 /// Tree-sitter analyzer for TypeScript & JavaScript (`.ts`, `.tsx`, `.d.ts`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`).
 pub struct TsJsAnalyzer;
@@ -72,6 +74,30 @@ fn parse_ts_js_tree(source: &str, path: &RelPath) -> Result<Tree, String> {
     } else {
         let lang = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
         parse_tree_strict(&lang, source)
+    }
+}
+
+/// Same grammar choice as [`parse_ts_js_tree`], but keeps a tree that has syntax errors
+/// (used by `klens check` to locate them).
+pub(crate) fn parse_ts_js_tree_lenient(source: &str, path: &RelPath) -> Result<Tree, String> {
+    let lower = path.as_str().to_ascii_lowercase();
+    if lower.ends_with(".tsx") || lower.ends_with(".jsx") {
+        let lang = tree_sitter_typescript::LANGUAGE_TSX.into();
+        parse_tree_lenient(&lang, source)
+    } else if lower.ends_with(".js") || lower.ends_with(".mjs") || lower.ends_with(".cjs") {
+        let tsx = tree_sitter_typescript::LANGUAGE_TSX.into();
+        let tsx_tree = parse_tree_lenient(&tsx, source)?;
+        if !tsx_tree.root_node().has_error() {
+            return Ok(tsx_tree);
+        }
+        let ts = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+        match parse_tree_lenient(&ts, source) {
+            Ok(ts_tree) if !ts_tree.root_node().has_error() => Ok(ts_tree),
+            _ => Ok(tsx_tree),
+        }
+    } else {
+        let lang = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+        parse_tree_lenient(&lang, source)
     }
 }
 

@@ -12,6 +12,7 @@
 //! - Project access policy enforced before every `tools/call` (`mode` & `allowed_clients`).
 
 mod blueprint_handler;
+mod check_handler;
 pub mod error;
 mod handler_common;
 mod handlers;

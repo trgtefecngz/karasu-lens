@@ -14,6 +14,7 @@ use crate::commands::adapters::{
     run_doctor_cmd, run_init_cmd, run_scan_cmd, run_setup_cmd, run_uninstall_cmd,
 };
 use crate::commands::blueprint::{BlueprintArgs, HandoffArgs, run_blueprint_cmd, run_handoff_cmd};
+use crate::commands::check::{CheckArgs, run_check_cmd};
 use crate::commands::code::{
     DiffCheckArgs, FindArgs, GraphArgs, HealthArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs,
     run_diff_check_cmd, run_find, run_graph, run_health_cmd, run_impact, run_map, run_outline,
@@ -58,6 +59,8 @@ enum Commands {
     Graph(GraphArgs),
     /// Inspect `git diff` mapped to AST symbols, protected paths, new dependencies, secrets, and impact.
     DiffCheck(DiffCheckArgs),
+    /// Syntax-check files (or the files in the git diff) right after an edit.
+    Check(CheckArgs),
     /// Run 5 deterministic traffic-light project health checks.
     Health(HealthArgs),
     /// Execute a terminal command with ANSI cleaning, block-aware filtering, zero error loss, and raw log capture.
@@ -141,6 +144,7 @@ fn run(cli: Cli) -> Result<CliOutcome, CliError> {
         Commands::Impact(args) => Ok(CliOutcome::ok(run_impact(args)?)),
         Commands::Graph(args) => Ok(CliOutcome::ok(run_graph(args)?)),
         Commands::DiffCheck(args) => Ok(run_diff_check_cmd(args)?),
+        Commands::Check(args) => run_check_cmd(args),
         Commands::Health(args) => Ok(CliOutcome::ok(run_health_cmd(args)?)),
         Commands::Run(args) => run_exec_cmd(args),
         Commands::Runs(args) => Ok(CliOutcome::ok(run_runs_cmd(args)?)),

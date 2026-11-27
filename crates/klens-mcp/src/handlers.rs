@@ -45,6 +45,7 @@ pub(crate) fn execute_tool(
         "klens_run" => handle_run(ctx, args),
         "klens_memory" => handle_memory(ctx, args),
         "klens_blueprint" => handle_blueprint(ctx, args),
+        "klens_check" => crate::check_handler::handle_check(ctx, args),
         other => Err(McpError::UnknownTool(other.to_string())),
     }
 }

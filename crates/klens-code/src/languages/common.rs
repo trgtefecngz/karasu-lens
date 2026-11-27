@@ -116,3 +116,39 @@ pub(crate) fn signature_until(node: Node<'_>, body: Option<Node<'_>>, source: &s
         .trim();
     normalize_signature(trimmed)
 }
+
+/// Parse source text with Tree-sitter and keep the tree even when it has syntax errors.
+pub(crate) fn parse_tree_lenient(language: &Language, source: &str) -> Result<Tree, String> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(language)
+        .map_err(|err| format!("failed to load tree-sitter language: {err}"))?;
+    parser
+        .parse(source, None)
+        .ok_or_else(|| "tree-sitter parser returned no syntax tree".to_string())
+}
+
+/// Every outermost `ERROR` node and every `MISSING` node, in source order (no cap).
+pub(crate) fn collect_syntax_problem_nodes(root: Node<'_>) -> Vec<Node<'_>> {
+    let mut stack = vec![root];
+    let mut found = Vec::new();
+
+    while let Some(node) = stack.pop() {
+        if node.is_error() || node.is_missing() {
+            found.push(node);
+            continue;
+        }
+        if node.has_error() {
+            let mut cursor = node.walk();
+            let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
+            for child in children.into_iter().rev() {
+                if child.has_error() || child.is_error() || child.is_missing() {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+
+    found.sort_by_key(|n| (n.start_byte(), n.end_byte()));
+    found
+}

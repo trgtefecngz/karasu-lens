@@ -151,7 +151,7 @@ fn e2e_klens_mcp_stdio_and_klens_stats_pipeline() {
 
     let list_r: Value = serde_json::from_str(resp_lines[1]).unwrap();
     assert_eq!(list_r["id"], "list-1");
-    assert_eq!(list_r["result"]["tools"].as_array().unwrap().len(), 8);
+    assert_eq!(list_r["result"]["tools"].as_array().unwrap().len(), 9);
 
     let map_r: Value = serde_json::from_str(resp_lines[2]).unwrap();
     assert!(
