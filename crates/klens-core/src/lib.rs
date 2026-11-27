@@ -60,7 +60,9 @@ pub use paths::{
     ProjectRoot, RelPath, is_network_or_device_path, is_plain_local_absolute, is_sensitive_path,
     write_atomic, write_atomic_private, write_atomic_with_mode_of,
 };
-pub use redact::{RedactionResult, SecretKind, redact_secrets};
+pub use redact::{
+    RedactionResult, SecretKind, private_key_line_spans, redact_secrets, redact_secrets_by_line,
+};
 pub use root_guard::{is_unsafe_project_root, unsafe_project_root_reason};
 pub use traits::{
     AdapterContext, CheckSeverity, CodeEdge, CommandFilter, DoctorCheck, EdgeConfidence,

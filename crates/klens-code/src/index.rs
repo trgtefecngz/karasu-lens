@@ -6,7 +6,8 @@ use std::time::UNIX_EPOCH;
 use ignore::WalkBuilder;
 use klens_core::{
     ParseOutcome, ProjectConfig, ProjectMode, ProjectRoot, RelPath, blake3_file,
-    blake3_normalized_bytes, blake3_parse_cache_key, normalize_line_endings, redact_secrets,
+    blake3_normalized_bytes, blake3_parse_cache_key, normalize_line_endings,
+    redact_secrets_by_line,
 };
 
 use crate::error::CodeError;
@@ -457,7 +458,9 @@ impl CodeIndex {
             parse_warning,
         };
 
-        let redacted_for_fts = redact_secrets(&normalized).text;
+        // Line-preserving: a PEM key block becomes one placeholder per line, so `klens_find` and
+        // `klens_impact` line numbers after a key block stay true.
+        let redacted_for_fts = redact_secrets_by_line(&normalized).text;
         self.store.upsert_file_with_byte_ranges(
             &record,
             &symbols,

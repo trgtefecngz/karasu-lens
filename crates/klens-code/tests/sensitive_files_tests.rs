@@ -167,3 +167,65 @@ fn credential_files_are_never_indexed_or_searchable() {
         "ordinary files must stay searchable, missing: {missing:?}"
     );
 }
+
+/// A private key embedded in an ordinary (readable) file, e.g. a test fixture.
+const KEY_FIXTURE: &str = "// fixture\n\
+const KEY: &str = r#\"\n\
+-----BEGIN RSA PRIVATE KEY-----\n\
+MIIEpAIBAAKCAQEAkeybodyline1klenspemcanary\n\
+MIIEpAIBAAKCAQEAkeybodyline2klenspemcanary\n\
+-----END RSA PRIVATE KEY-----\n\
+\"#;\n\
+fn after_key() { let marker = \"klensafterkey\"; }\n";
+
+fn key_fixture_project() -> (TempProject, CodeIndex) {
+    let tmp = TempProject::new();
+    fs::create_dir_all(tmp.0.join("tests")).unwrap();
+    fs::write(tmp.0.join("tests/fixture.rs"), KEY_FIXTURE).unwrap();
+    let root = ProjectRoot::new(&tmp.0).unwrap();
+    let index = CodeIndex::open(root, false).unwrap();
+    (tmp, index)
+}
+
+#[test]
+fn line_range_inside_a_private_key_body_is_masked() {
+    let (_tmp, index) = key_fixture_project();
+    let rel = RelPath::normalize("tests/fixture.rs").unwrap();
+    // Lines 4-5 are the key body; the BEGIN line (3) is outside the requested range.
+    for spec in ["4:5", "4:4", "5:8", "1:8"] {
+        let env = read_lines(&index, &rel, LineRange::parse(spec).unwrap()).unwrap();
+        let content = env.data.content.unwrap_or_default();
+        assert!(
+            !content.contains("klenspemcanary"),
+            "{spec}: key body leaked:\n{content}"
+        );
+        assert!(
+            content.contains("[REDACTED:PRIVATE_KEY]"),
+            "{spec}: {content}"
+        );
+        assert!(env.redactions_count >= 1, "{spec}: redaction not counted");
+    }
+    // Line numbers stay true: line 8 is still the line after the key.
+    let env = read_lines(&index, &rel, LineRange::parse("8:8").unwrap()).unwrap();
+    assert!(env.data.content.unwrap().starts_with("L8| fn after_key"));
+}
+
+#[test]
+fn search_hits_never_show_a_private_key_body_and_keep_true_line_numbers() {
+    let (_tmp, mut index) = key_fixture_project();
+    let body_hits = find_in_workspace(&mut index, "klenspemcanary", 50).unwrap();
+    for hit in &body_hits.data.matches {
+        assert!(
+            !hit.snippet.contains("klenspemcanary"),
+            "key body leaked through find: {hit:?}"
+        );
+    }
+    let after = find_in_workspace(&mut index, "klensafterkey", 50).unwrap();
+    let hit = after
+        .data
+        .matches
+        .iter()
+        .find(|m| m.path == "tests/fixture.rs")
+        .expect("line after the key must stay searchable");
+    assert_eq!(hit.line, 8, "line numbers after a key block must not shift");
+}
