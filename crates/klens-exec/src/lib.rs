@@ -24,7 +24,7 @@ pub mod store;
 use klens_core::{ProjectRoot, ProvenanceEnvelope, RawFallback, TrustLevel, redact_secrets};
 use serde::{Deserialize, Serialize};
 
-pub use ansi::{contains_ansi, strip_ansi};
+pub use ansi::{contains_ansi, strip_ansi, strip_escape_sequences};
 pub use capture::DEFAULT_MAX_CAPTURE_BYTES;
 pub use checkpoint::{
     CheckpointInfo, RollbackReport, create_checkpoint, format_checkpoint_created_text,
@@ -81,7 +81,7 @@ pub fn show_stored_run(
     let (meta, raw_text) = store.load_run(run_id)?;
 
     let (content, omissions, redactions_count) = if raw {
-        let redacted = redact_secrets(&raw_text);
+        let redacted = crate::ansi::redact_raw_output(&raw_text);
         (redacted.text, Vec::new(), redacted.redactions_count)
     } else {
         let clean = strip_ansi(&raw_text);

@@ -40,6 +40,36 @@ pub fn strip_ansi(input: &str) -> String {
     collapse_carriage_returns(&no_esc)
 }
 
+/// Remove ANSI/VT escape sequences (CSI, OSC, DCS, ...) only; every other byte, including `\r`
+/// and line endings, is kept as is. Used for `--raw` output, which must stay otherwise verbatim.
+pub fn strip_escape_sequences(input: &str) -> String {
+    let bytes = input.as_bytes();
+    if !bytes.contains(&0x1B) {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut copied_to = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == 0x1B {
+            out.push_str(&input[copied_to..i]);
+            i = skip_escape_sequence(bytes, i);
+            copied_to = i;
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&input[copied_to..]);
+    out
+}
+
+/// Redact secrets in raw (`--raw`) command output. Escape sequences are removed first: a colour
+/// code right before a token (`\x1b[32mghp_...`) ends in a letter, which would hide the token
+/// from the redactor's word-boundary check. The raw log on disk keeps the original bytes.
+pub(crate) fn redact_raw_output(raw: &str) -> klens_core::RedactionResult {
+    klens_core::redact_secrets(&strip_escape_sequences(raw))
+}
+
 /// Returns `true` if `text` contains any ANSI escape byte (`\x1b`).
 pub fn contains_ansi(text: &str) -> bool {
     text.as_bytes().contains(&0x1B)

@@ -332,7 +332,7 @@ pub fn execute_command(
 
     // Output text returned to caller (`--raw` returns redacted raw text; default returns filtered).
     let (returned_output, redactions_count) = if options.raw {
-        let redacted_raw = redact_secrets(&raw_combined);
+        let redacted_raw = crate::ansi::redact_raw_output(&raw_combined);
         (redacted_raw.text, redacted_raw.redactions_count)
     } else {
         (final_filtered_text, redacted_summary.redactions_count)
