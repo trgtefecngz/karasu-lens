@@ -332,7 +332,7 @@ pub fn execute_command(
 
     // Output text returned to caller (`--raw` returns redacted raw text; default returns filtered).
     let (returned_output, redactions_count) = if options.raw {
-        let redacted_raw = redact_secrets(&raw_combined);
+        let redacted_raw = crate::ansi::redact_raw_output(&raw_combined);
         (redacted_raw.text, redacted_raw.redactions_count)
     } else {
         (final_filtered_text, redacted_summary.redactions_count)
@@ -529,12 +529,23 @@ fn spawn_with_windows_fallback(
 
 #[cfg(windows)]
 fn resolve_windows_script_in_path(program: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    resolve_script_in_path_var(program, &path_var)
+}
+
+/// Find `<program>.cmd|.bat|.exe` in the directories of a `PATH` value. Empty and relative
+/// entries (`""`, `.`, `node_modules\.bin`) are skipped: they resolve against klens' own working
+/// directory, which is the repository, so a repository could plant its own `npm.cmd`.
+#[cfg(any(windows, test))]
+fn resolve_script_in_path_var(program: &str, path_var: &std::ffi::OsStr) -> Option<PathBuf> {
     let p = Path::new(program);
     if p.extension().is_some() || program.contains(['/', '\\']) {
         return None;
     }
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
+    for dir in std::env::split_paths(path_var) {
+        if dir.as_os_str().is_empty() || !dir.is_absolute() {
+            continue;
+        }
         for ext in ["cmd", "bat", "exe"] {
             let candidate = dir.join(format!("{program}.{ext}"));
             if candidate.is_file() {
@@ -579,5 +590,51 @@ mod tests {
     #[test]
     fn windows_create_no_window_constant_matches_win32_spec() {
         assert_eq!(WINDOWS_CREATE_NO_WINDOW, 0x0800_0000);
+    }
+
+    #[test]
+    fn script_lookup_skips_empty_and_relative_path_entries() {
+        let base = std::env::temp_dir().join(format!("klens-path-lookup-{}", std::process::id()));
+        let planted = base.join("repo-bin");
+        let trusted = base.join("trusted-bin");
+        std::fs::create_dir_all(&planted).unwrap();
+        std::fs::create_dir_all(&trusted).unwrap();
+        std::fs::write(planted.join("klenstool.cmd"), "@echo planted").unwrap();
+        std::fs::write(trusted.join("klenstool.cmd"), "@echo trusted").unwrap();
+
+        // A relative entry naming the planted folder (relative to the current directory) and
+        // an empty entry come first; only the absolute trusted entry may be used.
+        let cwd = std::env::current_dir().unwrap();
+        let relative = pathdiff_lexical(&planted, &cwd);
+        let path_var =
+            std::env::join_paths([PathBuf::new(), relative.clone(), trusted.clone()]).unwrap();
+        let relative_resolves = relative.join("klenstool.cmd").is_file();
+        let found = resolve_script_in_path_var("klenstool", &path_var);
+
+        let only_relative = std::env::join_paths([PathBuf::new(), relative]).unwrap();
+        let none = resolve_script_in_path_var("klenstool", &only_relative);
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert!(
+            relative_resolves,
+            "test setup: the relative entry must reach the planted file"
+        );
+        assert_eq!(found, Some(trusted.join("klenstool.cmd")));
+        assert_eq!(none, None);
+    }
+
+    /// `target` expressed relative to `from` with `..` segments (both absolute).
+    fn pathdiff_lexical(target: &Path, from: &Path) -> PathBuf {
+        let t: Vec<_> = target.components().collect();
+        let f: Vec<_> = from.components().collect();
+        let common = t.iter().zip(&f).take_while(|(a, b)| a == b).count();
+        let mut out = PathBuf::new();
+        for _ in common..f.len() {
+            out.push("..");
+        }
+        for c in &t[common..] {
+            out.push(c.as_os_str());
+        }
+        out
     }
 }

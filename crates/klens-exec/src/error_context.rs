@@ -19,8 +19,8 @@ use std::fs;
 use std::path::Path;
 
 use klens_core::{
-    Omission, ProjectConfig, ProjectRoot, RelPath, TokenBudget, estimate_tokens,
-    normalize_line_endings, redact_secrets,
+    Omission, ProjectConfig, ProjectRoot, RelPath, SecretKind, TokenBudget, estimate_tokens,
+    is_plain_local_absolute, normalize_line_endings, private_key_line_spans, redact_secrets,
 };
 use serde::{Deserialize, Serialize};
 
@@ -296,7 +296,23 @@ fn read_utf8_source_lines(abs_path: &Path) -> Option<Vec<String>> {
     }
     let text = std::str::from_utf8(&bytes).ok()?;
     let normalized = normalize_line_endings(text);
-    Some(normalized.lines().map(str::to_string).collect())
+    // Mask PEM private-key blocks over the whole file before any window is cut: a window that
+    // starts inside a key body would otherwise miss the `BEGIN` line redaction needs.
+    let key_spans = private_key_line_spans(&normalized);
+    let placeholder = SecretKind::PrivateKey.placeholder();
+    Some(
+        normalized
+            .lines()
+            .enumerate()
+            .map(|(idx, line)| {
+                if key_spans.iter().any(|(a, b)| *a <= idx && idx <= *b) {
+                    placeholder.to_string()
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect(),
+    )
 }
 
 fn normalize_candidate_to_rel_path(project_root: &ProjectRoot, raw_path: &str) -> Option<String> {
@@ -339,22 +355,6 @@ fn normalize_candidate_to_rel_path(project_root: &ProjectRoot, raw_path: &str) -
     let stripped = canon.strip_prefix(project_root.root()).ok()?;
     let rel = RelPath::from_relative_path(stripped).ok()?;
     Some(rel.as_str().to_string())
-}
-
-/// `C:\x`, `C:/x`, `\\?\C:\x` or (non-Windows) `/x`; never a UNC, device or doubled-slash path.
-fn is_plain_local_absolute(path: &str) -> bool {
-    let unverbatim = path
-        .strip_prefix(r"\\?\")
-        .or_else(|| path.strip_prefix("//?/"))
-        .unwrap_or(path);
-    if has_windows_drive_prefix(unverbatim) {
-        return true;
-    }
-    let starts_doubled = unverbatim.starts_with(r"\\")
-        || unverbatim.starts_with("//")
-        || unverbatim.starts_with(r"\/")
-        || unverbatim.starts_with(r"/\");
-    !cfg!(windows) && unverbatim.starts_with('/') && !starts_doubled
 }
 
 fn strip_win_verbatim(s: &str) -> &str {

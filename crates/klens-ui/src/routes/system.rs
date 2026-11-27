@@ -90,6 +90,7 @@ pub fn handle_fs_dirs(
     if target_str.contains('\0') {
         return Err(UiError::BadRequest("path contains NUL byte".into()));
     }
+    refuse_network_path(target_str)?;
 
     let candidate = PathBuf::from(target_str);
     if !candidate.exists() {
@@ -160,6 +161,7 @@ pub fn handle_select_project(
 ) -> Result<HttpResponse, UiError> {
     let body = read_json_body(request, false)?;
     let path_str = json_req_str(&body, "path")?;
+    refuse_network_path(path_str)?;
     let requested_ro = json_opt_bool(&body, "read_only")?;
 
     let (project, effective_ro) = state.select_project(Path::new(path_str), requested_ro)?;
@@ -186,6 +188,7 @@ pub fn handle_scan_projects(
 ) -> Result<HttpResponse, UiError> {
     let body = read_json_body(request, false)?;
     let path_str = json_req_str(&body, "path")?;
+    refuse_network_path(path_str)?;
     let depth = json_opt_usize(&body, "depth")?.unwrap_or(2);
     if depth == 0 || depth > 2 {
         return Err(UiError::BadRequest("`depth` must be 1 or 2".to_string()));
@@ -207,6 +210,9 @@ pub fn handle_attach_project(
         None => None,
     };
     let explicit_path = json_opt_str(&body, "path", false)?;
+    if let Some(p) = &explicit_path {
+        refuse_network_path(p)?;
+    }
 
     let (active_opt, read_only, _) = state.snapshot();
     if !dry_run {
@@ -231,6 +237,9 @@ pub fn handle_detach_project(
     let dry_run = json_opt_bool(&body, "dry_run")?.unwrap_or(false);
     let purge = json_opt_bool(&body, "purge")?.unwrap_or(false);
     let explicit_path = json_opt_str(&body, "path", false)?;
+    if let Some(p) = &explicit_path {
+        refuse_network_path(p)?;
+    }
 
     let (active_opt, read_only, _) = state.snapshot();
     if !dry_run {
@@ -445,6 +454,19 @@ fn parse_host_target(raw: &str, allow_auto: bool) -> Result<HostTarget, UiError>
             "invalid host target `{other}`"
         ))),
     }
+}
+
+/// Refuse network shares (`\\host\share`, `//host/share`, `\\?\UNC\...`) and device paths
+/// before any filesystem call: on Windows even checking whether one exists opens an SMB
+/// connection (credential hash leak, long stall).
+fn refuse_network_path(raw: &str) -> Result<(), UiError> {
+    if klens_core::is_network_or_device_path(raw) {
+        return Err(UiError::BadRequest(format!(
+            "network and device paths are not supported: {}",
+            raw.trim()
+        )));
+    }
+    Ok(())
 }
 
 fn build_quick_shortcuts(home_dir: &Path) -> Vec<serde_json::Value> {

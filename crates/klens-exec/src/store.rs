@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use klens_core::{ProjectRoot, SCHEMA_VERSION, write_atomic};
+use klens_core::{ProjectRoot, SCHEMA_VERSION, write_atomic, write_atomic_private};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ExecError;
@@ -145,7 +145,8 @@ impl RunStore {
         let meta_json = serde_json::to_string_pretty(&meta)?;
 
         self.ensure_runs_ignored_by_git()?;
-        write_atomic(&raw_abs, record.raw_log_content.as_bytes())?;
+        // Raw logs are unredacted: owner-only (0600) on Unix.
+        write_atomic_private(&raw_abs, record.raw_log_content.as_bytes())?;
         write_atomic(&meta_abs, meta_json.as_bytes())?;
 
         self.prune_old_runs()?;
@@ -388,6 +389,34 @@ mod tests {
             ".klens/runs/20261122-120005-aa05.raw.log"
         );
         assert_eq!(raw, "raw output #5\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_logs_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new("mode");
+        let root = ProjectRoot::new(&tmp.0).unwrap();
+        let store = RunStore::new(root);
+        let rec = NewRunRecord {
+            command: "env",
+            cwd: ".",
+            filter_used: "generic",
+            exit_code: 0,
+            duration_ms: 1,
+            raw_bytes: 10,
+            filtered_bytes: 10,
+            est_raw_tokens: 3,
+            est_filtered_tokens: 3,
+            truncated_errors: false,
+            raw_log_content: "TOKEN=unredacted\n",
+        };
+        store
+            .save_run_with_id("20261122-120001-bb01", "2026-11-22T12:00:00Z", &rec)
+            .unwrap();
+        let raw = store.runs_dir().join("20261122-120001-bb01.raw.log");
+        let mode = fs::metadata(raw).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

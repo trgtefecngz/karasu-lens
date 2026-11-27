@@ -1,14 +1,13 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::PathError;
 use crate::hash::project_id_from_canonical_root;
 
-static ATOMIC_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+pub use crate::atomic_write::{write_atomic, write_atomic_private, write_atomic_with_mode_of};
+pub use crate::local_path::{is_network_or_device_path, is_plain_local_absolute};
 
 /// Default sensitive patterns blocked from both read and write access (summary of the
 /// locked built-in rules in [`crate::sensitive`]).
@@ -312,110 +311,6 @@ pub fn matches_any_pattern(rel: &RelPath, patterns: &[String]) -> bool {
     }
 
     false
-}
-
-/// Atomically write bytes to `target` using a sibling temporary file and rename.
-/// Atomically replace `target` with `content` (temp file + rename). On Unix the new file keeps
-/// the permission bits of the file it replaces, so a private `0600` config stays private.
-pub fn write_atomic(target: &Path, content: &[u8]) -> Result<(), PathError> {
-    write_atomic_with_mode_of(target, content, target)
-}
-
-/// Like [`write_atomic`], but the new file takes its Unix permission bits from `mode_source`
-/// when that file exists (used for backups, which must be as private as the original).
-pub fn write_atomic_with_mode_of(
-    target: &Path,
-    content: &[u8],
-    mode_source: &Path,
-) -> Result<(), PathError> {
-    #[cfg(unix)]
-    let source_permissions = fs::metadata(mode_source).ok().map(|m| m.permissions());
-    #[cfg(not(unix))]
-    let _ = mode_source;
-    write_atomic_inner(target, content, |_tmp_path: &Path| {
-        #[cfg(unix)]
-        if let Some(permissions) = &source_permissions {
-            fs::set_permissions(_tmp_path, permissions.clone())?;
-        }
-        Ok(())
-    })
-}
-
-fn write_atomic_inner(
-    target: &Path,
-    content: &[u8],
-    prepare_tmp: impl FnOnce(&Path) -> std::io::Result<()>,
-) -> Result<(), PathError> {
-    let parent = target.parent().unwrap_or_else(|| Path::new("."));
-    if !parent.as_os_str().is_empty() {
-        fs::create_dir_all(parent).map_err(|source| PathError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-
-    let file_name = target
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("klens");
-    let pid = std::process::id();
-
-    let mut tmp_path = PathBuf::new();
-    let mut tmp_file = None;
-    for _ in 0..32 {
-        let seq = ATOMIC_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let candidate = parent.join(format!(".{file_name}.klens-tmp-{pid}-{seq}"));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(file) => {
-                tmp_path = candidate;
-                tmp_file = Some(file);
-                break;
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(source) => {
-                return Err(PathError::Io {
-                    path: candidate,
-                    source,
-                });
-            }
-        }
-    }
-
-    let mut file = tmp_file.ok_or_else(|| PathError::Io {
-        path: target.to_path_buf(),
-        source: std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "failed to allocate unique temporary file for atomic write",
-        ),
-    })?;
-
-    let write_res = file
-        .write_all(content)
-        .and_then(|()| file.sync_all())
-        .and_then(|()| prepare_tmp(&tmp_path));
-    drop(file);
-
-    if let Err(source) = write_res {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(PathError::Io {
-            path: tmp_path,
-            source,
-        });
-    }
-
-    if let Err(source) = fs::rename(&tmp_path, target) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(PathError::Io {
-            path: target.to_path_buf(),
-            source,
-        });
-    }
-
-    Ok(())
 }
 
 fn ensure_within_root(
@@ -724,48 +619,5 @@ mod tests {
             root.resolve_for_write(".env.local"),
             Err(PathError::SensitiveFileBlocked(_))
         ));
-    }
-
-    #[test]
-    fn write_atomic_creates_and_overwrites_without_leaving_temp_files() {
-        let dir = TestDir::new("atomic");
-        let target = dir.path().join("nested/config.toml");
-
-        write_atomic(&target, b"mode = \"active\"\n").unwrap();
-        assert_eq!(fs::read_to_string(&target).unwrap(), "mode = \"active\"\n");
-
-        write_atomic(&target, b"mode = \"read_only\"\n").unwrap();
-        assert_eq!(
-            fs::read_to_string(&target).unwrap(),
-            "mode = \"read_only\"\n"
-        );
-
-        let entries: Vec<_> = fs::read_dir(target.parent().unwrap())
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0], "config.toml");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn write_atomic_keeps_private_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("klens-mode-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let target = dir.join("config.json");
-        fs::write(&target, "{}").unwrap();
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
-
-        write_atomic(&target, b"{\"a\":1}").unwrap();
-        let backup = dir.join("config.json.bak");
-        write_atomic_with_mode_of(&backup, b"{}", &target).unwrap();
-
-        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        let (target_mode, backup_mode) = (mode(&target), mode(&backup));
-        let _ = fs::remove_dir_all(&dir);
-        assert_eq!(target_mode, 0o600);
-        assert_eq!(backup_mode, 0o600);
     }
 }

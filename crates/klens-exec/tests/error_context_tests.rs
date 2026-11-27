@@ -509,3 +509,29 @@ fn network_share_paths_in_output_are_never_opened() {
     assert_eq!(res.contexts.len(), 1, "{:?}", res.contexts);
     assert_eq!(res.contexts[0].path, "src/lib.rs");
 }
+
+#[test]
+fn error_window_inside_a_private_key_body_never_shows_the_key() {
+    let proj = Sandbox::new("pem-window");
+    let mut src = String::from("const KEY: &str = r#\"\n-----BEGIN RSA PRIVATE KEY-----\n");
+    for n in 0..60 {
+        src.push_str(&format!(
+            "MIIEkeybody{n:02}klenspemcanaryABCDEFGHIJKLMNOP\n"
+        ));
+    }
+    src.push_str("-----END RSA PRIVATE KEY-----\n\"#;\n");
+    proj.write("src/fixture.rs", &src);
+    let root = ProjectRoot::new(proj.path()).unwrap();
+
+    // The error line is deep inside the key body: the BEGIN line (2) is far outside the window.
+    let line = 2 + 30;
+    assert!(line > 2 + ERROR_CONTEXT_RADIUS_LINES + 1);
+    let res = collect_error_contexts(&root, &format!("  --> src/fixture.rs:{line}:1\n"));
+    assert_eq!(res.contexts.len(), 1);
+    let snippet = &res.contexts[0].snippet;
+    assert!(
+        !snippet.contains("klenspemcanary"),
+        "key body leaked:\n{snippet}"
+    );
+    assert!(snippet.contains("[REDACTED:PRIVATE_KEY]"), "{snippet}");
+}

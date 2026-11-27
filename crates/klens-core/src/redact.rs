@@ -2,6 +2,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+mod lines;
+pub use lines::{private_key_line_spans, redact_secrets_by_line};
+
 /// Category of detected secret material redacted at the output gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -67,7 +70,7 @@ pub fn redact_secrets(input: &str) -> RedactionResult {
 
     let mut i = 0usize;
     while i < len {
-        let prev = if i == 0 { None } else { Some(bytes[i - 1]) };
+        let at_boundary = is_token_boundary(bytes, i);
 
         // 1. PEM Private Key block (multi-line).
         if let Some(end) = match_private_key_block(input, i) {
@@ -82,9 +85,7 @@ pub fn redact_secrets(input: &str) -> RedactionResult {
         }
 
         // 2. AWS_SECRET_ACCESS_KEY & ANTHROPIC_API_KEY assignments (keep key + separator, redact value).
-        if is_token_boundary(prev)
-            && let Some((val_start, val_end)) = match_aws_secret_assignment(input, i)
-        {
+        if at_boundary && let Some((val_start, val_end)) = match_aws_secret_assignment(input, i) {
             out.push_str(&input[i..val_start]);
             record_redaction(
                 &mut out,
@@ -95,8 +96,7 @@ pub fn redact_secrets(input: &str) -> RedactionResult {
             i = val_end;
             continue;
         }
-        if is_token_boundary(prev)
-            && let Some((val_start, val_end)) = match_anthropic_env_assignment(input, i)
+        if at_boundary && let Some((val_start, val_end)) = match_anthropic_env_assignment(input, i)
         {
             out.push_str(&input[i..val_start]);
             record_redaction(
@@ -110,9 +110,7 @@ pub fn redact_secrets(input: &str) -> RedactionResult {
         }
 
         // 3. Bearer <token> header (keeps `Bearer `, redacts token).
-        if is_token_boundary(prev)
-            && let Some((tok_start, tok_end)) = match_bearer_token(input, i)
-        {
+        if at_boundary && let Some((tok_start, tok_end)) = match_bearer_token(input, i) {
             out.push_str(&input[i..tok_start]);
             record_redaction(
                 &mut out,
@@ -125,9 +123,7 @@ pub fn redact_secrets(input: &str) -> RedactionResult {
         }
 
         // 3b. Password inside a connection/remote URL (keeps scheme, user and host).
-        if is_token_boundary(prev)
-            && let Some((kind, pw_start, pw_end)) = match_url_userinfo_secret(input, i)
-        {
+        if at_boundary && let Some((kind, pw_start, pw_end)) = match_url_userinfo_secret(input, i) {
             out.push_str(&input[i..pw_start]);
             record_redaction(&mut out, &mut by_kind, &mut redactions_count, kind);
             i = pw_end;
@@ -135,9 +131,7 @@ pub fn redact_secrets(input: &str) -> RedactionResult {
         }
 
         // 4. Token-boundary prefixed secrets.
-        if is_token_boundary(prev)
-            && let Some((kind, end)) = match_prefixed_secret(input, i)
-        {
+        if at_boundary && let Some((kind, end)) = match_prefixed_secret(input, i) {
             record_redaction(&mut out, &mut by_kind, &mut redactions_count, kind);
             i = end;
             continue;
@@ -167,14 +161,20 @@ fn record_redaction(
     *by_kind.entry(kind).or_insert(0) += 1;
 }
 
-fn is_token_boundary(prev: Option<u8>) -> bool {
-    match prev {
-        None => true,
-        Some(b) => !(b.is_ascii_alphanumeric() || b == b'_'),
+/// Whether a secret may start at byte `i`: the byte before it is not part of a word. The letter
+/// of a backslash escape (`\n`, `\t`, ... as in JSON or log text such as `"a\nghp_..."`) also
+/// counts as a boundary, so an escaped line break does not glue the token to the text before it.
+fn is_token_boundary(bytes: &[u8], i: usize) -> bool {
+    let Some(&b) = i.checked_sub(1).and_then(|p| bytes.get(p)) else {
+        return true;
+    };
+    if !(b.is_ascii_alphanumeric() || b == b'_') {
+        return true;
     }
+    matches!(b, b'n' | b'r' | b't' | b'b' | b'f' | b'v' | b'0') && i >= 2 && bytes[i - 2] == b'\\'
 }
 
-fn match_private_key_block(input: &str, start: usize) -> Option<usize> {
+pub(crate) fn match_private_key_block(input: &str, start: usize) -> Option<usize> {
     let rest = &input[start..];
     if !rest.starts_with("-----BEGIN ") {
         return None;
@@ -750,5 +750,22 @@ let url = "https://example.com/path:with@sign";
         let res = redact_secrets(code);
         assert_eq!(res.redactions_count, 0, "{}", res.text);
         assert_eq!(res.text, code);
+    }
+
+    #[test]
+    fn tokens_after_a_backslash_escape_are_redacted() {
+        let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        for text in [
+            format!(r#"{{"log":"done\n{token}"}}"#),
+            format!(r"col\t{token}"),
+            format!(r"crlf\r\n{token}"),
+        ] {
+            let res = redact_secrets(&text);
+            assert!(!res.text.contains(token), "{text} -> {}", res.text);
+            assert_eq!(res.redactions_count, 1, "{text}");
+        }
+        // A word character that is not an escape letter still glues the prefix to a word.
+        let glued = format!("xy{token}");
+        assert_eq!(redact_secrets(&glued).redactions_count, 0);
     }
 }

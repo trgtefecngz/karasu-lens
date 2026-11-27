@@ -994,3 +994,124 @@ fn regression_7_checkpoint_rollback_preserves_unchanged_file_mtime_and_skips_noo
         .unwrap();
     assert_eq!(changed_mtime_before, changed_mtime_after);
 }
+
+#[test]
+fn raw_output_redacts_tokens_right_after_ansi_colour_codes() {
+    let proj = Sandbox::new("raw-ansi-token");
+    let root = ProjectRoot::new(proj.path()).unwrap();
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    let raw = format!("\x1b[32m{token}\x1b[0m\r\nok \x1b[1;31mERROR\x1b[0m\n");
+    let store = klens_exec::RunStore::new(root.clone());
+    let meta = store
+        .save_run(&klens_exec::NewRunRecord {
+            command: "tool",
+            cwd: ".",
+            filter_used: "generic",
+            exit_code: 0,
+            duration_ms: 1,
+            raw_bytes: raw.len(),
+            filtered_bytes: 0,
+            est_raw_tokens: 1,
+            est_filtered_tokens: 1,
+            truncated_errors: false,
+            raw_log_content: &raw,
+        })
+        .unwrap();
+
+    let shown = show_stored_run(&root, &meta.run_id, true).unwrap();
+    assert!(
+        !shown.data.content.contains(token),
+        "{}",
+        shown.data.content
+    );
+    assert!(shown.data.content.contains("[REDACTED:GITHUB_TOKEN]"));
+    assert!(shown.redactions_count >= 1);
+    // Only escape sequences are removed; line endings and text stay verbatim.
+    assert_eq!(shown.data.content, "[REDACTED:GITHUB_TOKEN]\r\nok ERROR\n");
+    // The log on disk keeps the original bytes.
+    let disk = fs::read_to_string(proj.path().join(&meta.raw_log_path)).unwrap();
+    assert_eq!(disk, raw);
+}
+
+#[test]
+fn live_raw_run_redacts_tokens_after_ansi_codes() {
+    let proj = Sandbox::new("raw-ansi-live");
+    let root = ProjectRoot::new(proj.path()).unwrap();
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    proj.write("out.txt", &format!("\x1b[32m{token}\x1b[0m\n"));
+    let cmd = shell_cmd("type out.txt", "cat out.txt");
+    let env = execute_command(
+        &root,
+        &cmd,
+        &RunOptions {
+            raw: true,
+            ..RunOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(!env.data.output.contains(token), "{}", env.data.output);
+    assert!(env.data.output.contains("[REDACTED:GITHUB_TOKEN]"));
+}
+
+#[test]
+fn checkpoints_and_rollback_honour_project_sensitive_and_protected_patterns() {
+    let proj = Sandbox::new("cp-project-guards");
+    proj.write(
+        ".klens/config.toml",
+        "extra_sensitive_patterns = [\"*.secret\", \"private/*\"]\nprotected_paths = [\"src/locked*\"]\n",
+    );
+    proj.write("app.secret", "PROJECT_SECRET_VALUE\n");
+    proj.write("private/notes.txt", "PRIVATE_NOTES\n");
+    proj.write(".envrc", "export TOKEN=x\n");
+    proj.write("src/main.rs", "fn main() {}\n");
+    proj.write("src/locked.rs", "pub const LOCKED: u32 = 1;\n");
+
+    run_git_ok(proj.path(), &["init"]);
+    run_git_ok(proj.path(), &["config", "user.email", "t@klens.local"]);
+    run_git_ok(proj.path(), &["config", "user.name", "T"]);
+    run_git_ok(proj.path(), &["add", "src"]);
+    run_git_ok(proj.path(), &["commit", "-m", "init"]);
+
+    let root = ProjectRoot::new(proj.path()).unwrap();
+    let cp = create_checkpoint(&root, Some("guards")).unwrap();
+
+    let tree = run_git_ok(
+        proj.path(),
+        &[
+            "ls-tree",
+            "-r",
+            "--name-only",
+            &format!("refs/klens/checkpoints/{}", cp.data.id),
+        ],
+    );
+    for never in ["app.secret", "private/notes.txt", ".envrc"] {
+        assert!(
+            !tree.lines().any(|l| l == never),
+            "`{never}` must not be stored in a checkpoint:\n{tree}"
+        );
+    }
+    assert!(tree.lines().any(|l| l == "src/main.rs"), "{tree}");
+    assert!(tree.lines().any(|l| l == "src/locked.rs"), "{tree}");
+
+    // After the checkpoint: edit both files and add a new protected file.
+    proj.write("src/main.rs", "fn main() { changed(); }\n");
+    proj.write("src/locked.rs", "pub const LOCKED: u32 = 2;\n");
+    proj.write("src/locked_new.rs", "pub const NEW: u32 = 3;\n");
+
+    let report = rollback_checkpoint(&root, &cp.data.id, false).unwrap();
+    assert_eq!(report.data.files_to_modify, vec!["src/main.rs"]);
+    assert!(report.data.files_to_delete.is_empty(), "{:?}", report.data);
+    assert_eq!(
+        fs::read_to_string(proj.path().join("src/main.rs")).unwrap(),
+        "fn main() {}\n"
+    );
+    // Protected paths are never modified or deleted by a rollback.
+    assert_eq!(
+        fs::read_to_string(proj.path().join("src/locked.rs")).unwrap(),
+        "pub const LOCKED: u32 = 2;\n"
+    );
+    assert!(proj.path().join("src/locked_new.rs").is_file());
+    // Sensitive files are untouched.
+    assert!(proj.path().join("app.secret").is_file());
+    assert!(proj.path().join("private/notes.txt").is_file());
+}

@@ -7,6 +7,7 @@
 //! secret redaction, CRLF-normalized BLAKE3 hashing, deterministic
 //! token budgeting, configuration models, and pluggable trait contracts.
 
+mod atomic_write;
 pub mod budget;
 pub mod config;
 pub mod envelope;
@@ -17,6 +18,7 @@ pub mod git;
 pub mod hash;
 mod input_path;
 mod links;
+mod local_path;
 pub mod paths;
 pub mod redact;
 pub mod root_guard;
@@ -56,8 +58,13 @@ pub use hash::{
     normalize_line_endings,
 };
 pub use links::first_linked_component;
-pub use paths::{ProjectRoot, RelPath, is_sensitive_path, write_atomic, write_atomic_with_mode_of};
-pub use redact::{RedactionResult, SecretKind, redact_secrets};
+pub use paths::{
+    ProjectRoot, RelPath, is_network_or_device_path, is_plain_local_absolute, is_sensitive_path,
+    write_atomic, write_atomic_private, write_atomic_with_mode_of,
+};
+pub use redact::{
+    RedactionResult, SecretKind, private_key_line_spans, redact_secrets, redact_secrets_by_line,
+};
 pub use root_guard::{is_unsafe_project_root, unsafe_project_root_reason};
 pub use traits::{
     AdapterContext, CheckSeverity, CodeEdge, CommandFilter, DoctorCheck, EdgeConfidence,

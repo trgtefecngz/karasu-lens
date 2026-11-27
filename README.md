@@ -177,9 +177,13 @@ inside a repository is ignored.
 - **Offline core.** Analysis commands make no network requests and send no telemetry.
 - **Path confinement.** Every read and write stays inside the project root. Path traversal,
   escaping symlinks, and Windows path tricks are rejected.
-- **Credential files are off-limits.** `.env*`, private keys, SSH keys, the `.ssh/`, `.aws/`,
-  `.gnupg/` and `.kube/` folders, `.npmrc`, `.git-credentials`, certificate stores, and common tool
-  token files are never read, indexed, or searched.
+- **Credential files are off-limits.** `.env*` and `.envrc`, private and signing keys, SSH keys,
+  the `.ssh/`, `.aws/`, `.azure/`, `.config/gcloud/`, `.terraform.d/`, `.gnupg/` and `.kube/`
+  folders, `.npmrc`, `.yarnrc.yml`, `.git-credentials`, `.cargo/credentials`, certificate stores,
+  KeePass databases, shell history, and common tool token files (Docker, Vault, Codex, GitHub CLI)
+  are never read, indexed, or searched. The full list is in [SECURITY.md](SECURITY.md).
+- **No network paths.** Paths that point at a network share (`\\host\share`) are refused before
+  any file access, so Windows never opens an SMB connection for them.
 - **No surprise processes.** A repository cannot make `klens` run a program; optional parsers come
   only from your own `~/.klens` folder.
 - **No accidental whole-disk indexing.** Your home folder, its parent folders, and drive roots
@@ -187,6 +191,10 @@ inside a repository is ignored.
 - **Secret redaction.** Known secret formats are masked before output leaves `klens`, for example
   private key blocks, Anthropic, OpenAI and Google API keys, GitHub and GitLab tokens, AWS keys,
   `Bearer` tokens, JWTs, Slack, Stripe and npm tokens, and passwords inside database and remote URLs.
+- **What redaction does not cover.** `klens run` runs the command you give it. A command such as
+  `cat .env` prints that file, and only the known secret formats above are masked; anything else
+  is shown as is. The raw logs under `.klens/runs/` keep the full, unredacted output (they are
+  git-ignored, and owner-only on Unix). Redaction happens when a log is shown, not on disk.
 - **Local UI hardening.** The dashboard binds to `127.0.0.1` only. It validates the `Host`
   header, uses an `HttpOnly` session cookie, and requires a CSRF check on every change.
 

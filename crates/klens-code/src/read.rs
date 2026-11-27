@@ -2,8 +2,8 @@ use std::fmt::Write as _;
 use std::fs;
 
 use klens_core::{
-    ProvenanceEnvelope, RawFallback, RelPath, SymbolInfo, SymbolKind, TrustLevel,
-    normalize_line_endings, redact_secrets,
+    ProvenanceEnvelope, RawFallback, RelPath, SecretKind, SymbolInfo, SymbolKind, TrustLevel,
+    normalize_line_endings, private_key_line_spans, redact_secrets,
 };
 use serde::{Deserialize, Serialize};
 
@@ -744,20 +744,40 @@ fn slice_numbered_lines(
         range.end
     };
 
+    // PEM private-key blocks are found over the WHOLE file and masked line by line before
+    // slicing: a range that starts inside a key body never contains the `BEGIN` line that
+    // `redact_secrets` needs to recognise it.
+    let key_spans = private_key_line_spans(&normalized);
+    let (first_idx, last_idx) = (range.start - 1, clamped_end - 1);
+    let visible_key_blocks = key_spans
+        .iter()
+        .filter(|(first, last)| *first <= last_idx && first_idx <= *last)
+        .count();
+    let in_key_block = |idx: usize| {
+        key_spans
+            .iter()
+            .any(|(first, last)| *first <= idx && idx <= *last)
+    };
+
     let mut formatted = String::new();
-    for (idx, line) in lines[range.start - 1..clamped_end].iter().enumerate() {
-        let line_no = range.start + idx;
-        if idx > 0 {
+    for (offset, line) in lines[first_idx..=last_idx].iter().enumerate() {
+        let line_no = range.start + offset;
+        if offset > 0 {
             formatted.push('\n');
         }
-        let _ = write!(formatted, "L{line_no}| {line}");
+        let shown = if in_key_block(first_idx + offset) {
+            SecretKind::PrivateKey.placeholder()
+        } else {
+            line
+        };
+        let _ = write!(formatted, "L{line_no}| {shown}");
     }
 
     let redacted = redact_secrets(&formatted);
     Ok((
         redacted.text,
         total_lines,
-        redacted.redactions_count,
+        redacted.redactions_count + visible_key_blocks,
         warnings,
     ))
 }
