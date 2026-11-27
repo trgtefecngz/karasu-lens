@@ -132,12 +132,13 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "klens_impact",
-            description: "Blast radius (dependents and callers with confidence) for file or symbol.",
+            description: "Before edits: dependents of a file, symbol, or diff.",
             input_schema: json!({
                 "type": "object",
                 "required": ["target"],
                 "properties": {
                     "target": { "type": "string", "description": "path, symbol, path#symbol, diff, or diff:staged" },
+                    "budget": { "type": "integer" },
                     "format": { "type": "string", "enum": ["text", "json"] }
                 }
             }),

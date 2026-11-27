@@ -746,12 +746,16 @@ pub fn format_read_context_text(bundle: &ReadContextBundle) -> String {
                     .as_deref()
                     .map(|s| format!(" in `{s}`"))
                     .unwrap_or_default();
+                // The evidence usually starts with the same `path:Lnn`; print only its reason.
+                let reason = hit
+                    .evidence_reason()
+                    .map(|r| format!(" — {r}"))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     out,
-                    "  - [d={} | {}] {loc}{scope} — {}",
+                    "  - [d={} | {}] {loc}{scope}{reason}",
                     hit.distance,
                     confidence_label(hit.confidence),
-                    hit.evidence
                 );
             }
         }
