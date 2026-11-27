@@ -1052,3 +1052,66 @@ fn live_raw_run_redacts_tokens_after_ansi_codes() {
     assert!(!env.data.output.contains(token), "{}", env.data.output);
     assert!(env.data.output.contains("[REDACTED:GITHUB_TOKEN]"));
 }
+
+#[test]
+fn checkpoints_and_rollback_honour_project_sensitive_and_protected_patterns() {
+    let proj = Sandbox::new("cp-project-guards");
+    proj.write(
+        ".klens/config.toml",
+        "extra_sensitive_patterns = [\"*.secret\", \"private/*\"]\nprotected_paths = [\"src/locked*\"]\n",
+    );
+    proj.write("app.secret", "PROJECT_SECRET_VALUE\n");
+    proj.write("private/notes.txt", "PRIVATE_NOTES\n");
+    proj.write(".envrc", "export TOKEN=x\n");
+    proj.write("src/main.rs", "fn main() {}\n");
+    proj.write("src/locked.rs", "pub const LOCKED: u32 = 1;\n");
+
+    run_git_ok(proj.path(), &["init"]);
+    run_git_ok(proj.path(), &["config", "user.email", "t@klens.local"]);
+    run_git_ok(proj.path(), &["config", "user.name", "T"]);
+    run_git_ok(proj.path(), &["add", "src"]);
+    run_git_ok(proj.path(), &["commit", "-m", "init"]);
+
+    let root = ProjectRoot::new(proj.path()).unwrap();
+    let cp = create_checkpoint(&root, Some("guards")).unwrap();
+
+    let tree = run_git_ok(
+        proj.path(),
+        &[
+            "ls-tree",
+            "-r",
+            "--name-only",
+            &format!("refs/klens/checkpoints/{}", cp.data.id),
+        ],
+    );
+    for never in ["app.secret", "private/notes.txt", ".envrc"] {
+        assert!(
+            !tree.lines().any(|l| l == never),
+            "`{never}` must not be stored in a checkpoint:\n{tree}"
+        );
+    }
+    assert!(tree.lines().any(|l| l == "src/main.rs"), "{tree}");
+    assert!(tree.lines().any(|l| l == "src/locked.rs"), "{tree}");
+
+    // After the checkpoint: edit both files and add a new protected file.
+    proj.write("src/main.rs", "fn main() { changed(); }\n");
+    proj.write("src/locked.rs", "pub const LOCKED: u32 = 2;\n");
+    proj.write("src/locked_new.rs", "pub const NEW: u32 = 3;\n");
+
+    let report = rollback_checkpoint(&root, &cp.data.id, false).unwrap();
+    assert_eq!(report.data.files_to_modify, vec!["src/main.rs"]);
+    assert!(report.data.files_to_delete.is_empty(), "{:?}", report.data);
+    assert_eq!(
+        fs::read_to_string(proj.path().join("src/main.rs")).unwrap(),
+        "fn main() {}\n"
+    );
+    // Protected paths are never modified or deleted by a rollback.
+    assert_eq!(
+        fs::read_to_string(proj.path().join("src/locked.rs")).unwrap(),
+        "pub const LOCKED: u32 = 2;\n"
+    );
+    assert!(proj.path().join("src/locked_new.rs").is_file());
+    // Sensitive files are untouched.
+    assert!(proj.path().join("app.secret").is_file());
+    assert!(proj.path().join("private/notes.txt").is_file());
+}

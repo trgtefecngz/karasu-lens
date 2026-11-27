@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use klens_core::{ProjectRoot, ProvenanceEnvelope, TrustLevel};
+use klens_core::{ProjectConfig, ProjectRoot, ProvenanceEnvelope, RelPath, TrustLevel};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ExecError;
@@ -19,6 +19,54 @@ use klens_core::time::generate_sortable_id;
 
 const CHECKPOINT_REF_PREFIX: &str = "refs/klens/checkpoints/";
 static TMP_INDEX_SEQ: AtomicU64 = AtomicU64::new(0);
+/// Paths passed to one `git` invocation (keeps command lines short on Windows).
+const GIT_PATH_CHUNK_SIZE: usize = 64;
+
+/// The project's own rules from `.klens/config.toml`, applied on top of the built-in
+/// sensitive list: `extra_sensitive_patterns` are never stored in a checkpoint, and neither
+/// they nor `protected_paths` are ever restored, modified or deleted by a rollback.
+struct ProjectGuards {
+    extra_sensitive: Vec<String>,
+    protected: Vec<String>,
+}
+
+impl ProjectGuards {
+    /// Fails closed: an unreadable project config stops the checkpoint instead of silently
+    /// dropping the project's rules.
+    fn load(root: &Path) -> Result<Self, ExecError> {
+        let cfg_path = root.join(".klens").join("config.toml");
+        let cfg = ProjectConfig::load_or_default(&cfg_path)?;
+        Ok(Self {
+            extra_sensitive: cfg.extra_sensitive_patterns,
+            protected: cfg.protected_paths,
+        })
+    }
+
+    /// Credential material (built-in rules + `extra_sensitive_patterns`).
+    fn is_never_stored(&self, git_path: &str) -> bool {
+        if klens_core::sensitive::is_builtin_sensitive(git_path) {
+            return true;
+        }
+        matches_project_patterns(git_path, &self.extra_sensitive)
+    }
+
+    /// Credential material or a `protected_paths` entry.
+    fn is_never_rolled_back(&self, git_path: &str) -> bool {
+        self.is_never_stored(git_path) || matches_project_patterns(git_path, &self.protected)
+    }
+}
+
+/// klens glob matching for a git path. A name klens cannot represent as a project path (e.g. one
+/// containing `:` on Unix) counts as a match whenever patterns exist, so it is never exposed.
+fn matches_project_patterns(git_path: &str, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+    match RelPath::normalize(git_path) {
+        Ok(rel) => klens_core::paths::matches_any_pattern(&rel, patterns),
+        Err(_) => true,
+    }
+}
 
 /// Metadata for a single Git checkpoint snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,7 +150,8 @@ pub fn create_checkpoint(
     ensure_git_repo(root)?;
 
     let git_dir = resolve_git_dir(root)?;
-    let tree_oid = snapshot_worktree_to_tree(root, &git_dir)?;
+    let guards = ProjectGuards::load(root)?;
+    let tree_oid = snapshot_worktree_to_tree(root, &git_dir, &guards)?;
     let info = write_checkpoint_commit(root, &tree_oid, note)?;
 
     Ok(ProvenanceEnvelope::new(
@@ -201,7 +250,8 @@ pub fn rollback_checkpoint(
     let target = resolve_checkpoint(&all, id_or_prefix)?;
 
     let git_dir = resolve_git_dir(root)?;
-    let current_tree = snapshot_worktree_to_tree(root, &git_dir)?;
+    let guards = ProjectGuards::load(root)?;
+    let current_tree = snapshot_worktree_to_tree(root, &git_dir, &guards)?;
 
     let target_ref = format!("{CHECKPOINT_REF_PREFIX}{}", target.id);
     let target_tree_spec = format!("{target_ref}^{{tree}}");
@@ -233,10 +283,12 @@ pub fn rollback_checkpoint(
 
     let mut fields = diff_out.split('\0').filter(|f| !f.is_empty());
     while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
-        // Credential files are never restored or deleted (older checkpoints may contain them).
+        // Credential files (built-in and the project's `extra_sensitive_patterns`) and the
+        // project's `protected_paths` are never restored or deleted (older checkpoints may
+        // contain them).
         if !is_safe_git_relative_path(path)
             || is_protected_klens_runtime_path(path)
-            || klens_core::sensitive::is_builtin_sensitive(path)
+            || guards.is_never_rolled_back(path)
         {
             continue;
         }
@@ -267,7 +319,6 @@ pub fn rollback_checkpoint(
         // 1. Restore ONLY changed/deleted files from the target tree first, via an isolated temp
         //    index (`checkout-index -f -- <paths>`), so unchanged files keep their `mtime` and
         //    `HEAD` / the real `.git/index` stay untouched. If this fails, nothing was deleted yet.
-        const GIT_PATH_CHUNK_SIZE: usize = 64;
         let paths_to_checkout: Vec<&str> = files_to_restore
             .iter()
             .chain(files_to_modify.iter())
@@ -412,7 +463,11 @@ fn resolve_git_dir(root: &Path) -> Result<PathBuf, ExecError> {
     }
 }
 
-fn snapshot_worktree_to_tree(root: &Path, git_dir: &Path) -> Result<String, ExecError> {
+fn snapshot_worktree_to_tree(
+    root: &Path,
+    git_dir: &Path,
+    guards: &ProjectGuards,
+) -> Result<String, ExecError> {
     let tmp_idx = TempGitIndex::allocate(git_dir);
     let env = vec![("GIT_INDEX_FILE".to_string(), tmp_idx.git_env_path())];
     git_stdout_with_env(root, &["add", "-A", "--", "."], &env)?;
@@ -444,6 +499,25 @@ fn snapshot_worktree_to_tree(root: &Path, git_dir: &Path) -> Result<String, Exec
     );
     let rm_args: Vec<&str> = rm_sensitive.iter().map(String::as_str).collect();
     git_stdout_with_env(root, &rm_args, &env)?;
+
+    // Second pass with klens' own matcher: the project's `extra_sensitive_patterns` (and the
+    // built-in rules once more) applied to the exact staged paths. Project patterns are never
+    // turned into git pathspecs: klens globs differ from git's, and repository-supplied strings
+    // could carry pathspec magic. Paths are removed literally (`GIT_LITERAL_PATHSPECS=1`).
+    let staged = git_stdout_with_env(root, &["ls-files", "-z", "--cached"], &env)?;
+    let never_stored: Vec<&str> = staged
+        .split('\0')
+        .filter(|p| !p.is_empty() && guards.is_never_stored(p))
+        .collect();
+    let mut literal_env = env.clone();
+    literal_env.push(("GIT_LITERAL_PATHSPECS".to_string(), "1".to_string()));
+    for chunk in never_stored.chunks(GIT_PATH_CHUNK_SIZE) {
+        let mut args: Vec<&str> = Vec::with_capacity(chunk.len() + 4);
+        args.extend(["rm", "--cached", "--ignore-unmatch", "-q", "--"]);
+        args.extend_from_slice(chunk);
+        git_stdout_with_env(root, &args, &literal_env)?;
+    }
+
     let tree_oid = git_stdout_with_env(root, &["write-tree"], &env)?;
     Ok(tree_oid.trim().to_string())
 }
