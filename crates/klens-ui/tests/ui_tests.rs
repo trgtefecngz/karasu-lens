@@ -768,6 +768,32 @@ fn utf8_turkish_folder_picker_fail_closed_validation_and_graceful_shutdown() {
     assert_eq!(roots_resp.status, 200);
     assert!(!roots_resp.json()["dirs"].as_array().unwrap().is_empty());
 
+    // Network shares are refused before any filesystem call (no SMB connection, no stall).
+    let started = std::time::Instant::now();
+    for unc in [
+        r"\\192.0.2.1\share",
+        "//192.0.2.1/share",
+        r"\\?\UNC\192.0.2.1\share",
+    ] {
+        let resp = send_http(
+            srv.port,
+            "GET",
+            &format!("/api/fs/dirs?path={}", percent_encode_utf8(unc)),
+            &[("Cookie", &cookie)],
+            None,
+        );
+        assert_eq!(resp.status, 400, "{unc}: {}", resp.body);
+        let body = format!("{{\"path\":{}}}", json!(unc));
+        for route in ["/api/projects/select", "/api/projects/scan"] {
+            let resp = send_http(srv.port, "POST", route, &write_hdrs, Some(&body));
+            assert_eq!(resp.status, 400, "{route} {unc}: {}", resp.body);
+        }
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "network paths must be refused without touching the network"
+    );
+
     // 2. Fail-closed query & JSON validation -> 400 Bad Request (never silent fallback).
     assert_eq!(
         send_http(

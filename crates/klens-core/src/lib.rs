@@ -56,7 +56,10 @@ pub use hash::{
     normalize_line_endings,
 };
 pub use links::first_linked_component;
-pub use paths::{ProjectRoot, RelPath, is_sensitive_path, write_atomic, write_atomic_with_mode_of};
+pub use paths::{
+    ProjectRoot, RelPath, is_network_or_device_path, is_plain_local_absolute, is_sensitive_path,
+    write_atomic, write_atomic_private, write_atomic_with_mode_of,
+};
 pub use redact::{RedactionResult, SecretKind, redact_secrets};
 pub use root_guard::{is_unsafe_project_root, unsafe_project_root_reason};
 pub use traits::{

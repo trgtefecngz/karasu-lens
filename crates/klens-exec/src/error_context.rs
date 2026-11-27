@@ -20,7 +20,7 @@ use std::path::Path;
 
 use klens_core::{
     Omission, ProjectConfig, ProjectRoot, RelPath, TokenBudget, estimate_tokens,
-    normalize_line_endings, redact_secrets,
+    is_plain_local_absolute, normalize_line_endings, redact_secrets,
 };
 use serde::{Deserialize, Serialize};
 
@@ -339,22 +339,6 @@ fn normalize_candidate_to_rel_path(project_root: &ProjectRoot, raw_path: &str) -
     let stripped = canon.strip_prefix(project_root.root()).ok()?;
     let rel = RelPath::from_relative_path(stripped).ok()?;
     Some(rel.as_str().to_string())
-}
-
-/// `C:\x`, `C:/x`, `\\?\C:\x` or (non-Windows) `/x`; never a UNC, device or doubled-slash path.
-fn is_plain_local_absolute(path: &str) -> bool {
-    let unverbatim = path
-        .strip_prefix(r"\\?\")
-        .or_else(|| path.strip_prefix("//?/"))
-        .unwrap_or(path);
-    if has_windows_drive_prefix(unverbatim) {
-        return true;
-    }
-    let starts_doubled = unverbatim.starts_with(r"\\")
-        || unverbatim.starts_with("//")
-        || unverbatim.starts_with(r"\/")
-        || unverbatim.starts_with(r"/\");
-    !cfg!(windows) && unverbatim.starts_with('/') && !starts_doubled
 }
 
 fn strip_win_verbatim(s: &str) -> &str {

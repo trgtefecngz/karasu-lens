@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::PathError;
-use crate::paths::{ProjectRoot, RelPath};
+use crate::paths::{ProjectRoot, RelPath, is_plain_local_absolute};
 
 impl ProjectRoot {
     /// Accept a relative path, or an absolute path inside this project, as a [`RelPath`].
@@ -30,7 +30,11 @@ impl ProjectRoot {
             return RelPath::normalize(if rest.is_empty() { "." } else { rest });
         }
 
-        if let Ok(canonical) = fs::canonicalize(Path::new(trimmed))
+        // Only plain local paths may reach the filesystem: canonicalizing `\\host\share`,
+        // `//host/share` or `\\?\UNC\...` makes Windows open an SMB connection (NTLM hash leak,
+        // ~20 s stall of the single-threaded MCP server).
+        if is_plain_local_absolute(trimmed)
+            && let Ok(canonical) = fs::canonicalize(Path::new(trimmed))
             && let Ok(rest) = canonical.strip_prefix(self.root())
         {
             return RelPath::from_relative_path(rest);
@@ -164,6 +168,31 @@ mod tests {
         let root_shown = normalize_separators(&root.root().to_string_lossy());
         let _ = fs::remove_dir_all(&dir);
         assert!(err.contains(&root_shown), "{err}");
+    }
+
+    #[test]
+    fn network_paths_are_refused_without_touching_the_network() {
+        let (dir, root) = project();
+        let started = std::time::Instant::now();
+        let results: Vec<_> = [
+            r"\\192.0.2.1\share\src\lib.rs",
+            "//192.0.2.1/share/src/lib.rs",
+            r"\\?\UNC\192.0.2.1\share\src\lib.rs",
+            "//?/UNC/192.0.2.1/share/src/lib.rs",
+        ]
+        .iter()
+        .map(|p| (*p, root.relative_input(p)))
+        .collect();
+        let elapsed = started.elapsed();
+        let _ = fs::remove_dir_all(&dir);
+        for (input, res) in results {
+            assert!(
+                matches!(res, Err(PathError::OutsideProject { .. })),
+                "{input}: {res:?}"
+            );
+        }
+        // An SMB attempt to an unroutable address would stall for many seconds.
+        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
     }
 
     #[test]
