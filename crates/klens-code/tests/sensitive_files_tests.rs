@@ -53,6 +53,20 @@ const SENSITIVE: &[&str] = &[
     ".codex/auth.json",
     ".claude/.credentials.json",
     ".config/gh/hosts.yml",
+    // direnv, signing keys, password databases and more tool token / history files.
+    ".envrc",
+    "keys/AuthKey_ABC123.p8",
+    "android/platform.pk8",
+    "vault/passwords.kdbx",
+    ".vault-token",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".dockercfg",
+    ".yarnrc.yml",
+    ".bash_history",
+    ".azure/accessTokens.json",
+    ".config/gcloud/application_default_credentials.json",
+    ".terraform.d/credentials.tfrc.json",
 ];
 
 /// Ordinary project files with lookalike names that MUST stay readable and searchable.
@@ -69,6 +83,9 @@ const SAFE: &[&str] = &[
     ".claude/settings.json",
     ".github/workflows/ci.yml",
     "kube/deployment.yaml",
+    "src/azure.rs",
+    "terraform/main.tf",
+    ".cargo/config.toml",
 ];
 
 static SEQ: AtomicU64 = AtomicU64::new(0);

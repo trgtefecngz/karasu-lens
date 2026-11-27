@@ -11,11 +11,24 @@
 
 /// Directory names whose entire contents are treated as credential material.
 /// `.git` holds remote URLs with embedded credentials, hooks and repository config.
-pub const SENSITIVE_DIR_NAMES: &[&str] = &[".ssh", ".aws", ".gnupg", ".kube", ".git"];
+pub const SENSITIVE_DIR_NAMES: &[&str] = &[
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    ".kube",
+    ".git",
+    ".azure",
+    ".terraform.d",
+];
+
+/// Multi-segment directory paths whose entire contents are credential material, matched at any
+/// depth (case-insensitive).
+pub const SENSITIVE_DIR_PATHS: &[&str] = &[".config/gcloud"];
 
 /// Exact file names (case-insensitive).
 pub const SENSITIVE_FILE_NAMES: &[&str] = &[
     ".env",
+    ".envrc",
     ".npmrc",
     ".pypirc",
     ".netrc",
@@ -23,6 +36,10 @@ pub const SENSITIVE_FILE_NAMES: &[&str] = &[
     ".git-credentials",
     ".pgpass",
     ".credentials.json",
+    ".vault-token",
+    ".dockercfg",
+    ".yarnrc.yml",
+    ".bash_history",
 ];
 
 /// File-name prefixes (case-insensitive).
@@ -30,18 +47,35 @@ pub const SENSITIVE_FILE_PREFIXES: &[&str] =
     &[".env.", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"];
 
 /// File-name suffixes (case-insensitive).
-pub const SENSITIVE_FILE_SUFFIXES: &[&str] =
-    &[".pem", ".key", ".pfx", ".p12", ".jks", ".keystore", ".ppk"];
+pub const SENSITIVE_FILE_SUFFIXES: &[&str] = &[
+    ".pem",
+    ".key",
+    ".pfx",
+    ".p12",
+    ".jks",
+    ".keystore",
+    ".ppk",
+    ".p8",
+    ".pk8",
+    ".kdbx",
+];
 
 /// Trailing path segments identifying tool-specific token files (case-insensitive).
-pub const SENSITIVE_PATH_SUFFIXES: &[&str] =
-    &[".docker/config.json", ".codex/auth.json", "gh/hosts.yml"];
+pub const SENSITIVE_PATH_SUFFIXES: &[&str] = &[
+    ".docker/config.json",
+    ".codex/auth.json",
+    "gh/hosts.yml",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+];
 
 /// Human-readable glob summary of every built-in rule (for `effective_sensitive_patterns`
-/// and documentation). Matching itself uses [`is_builtin_sensitive`].
+/// and documentation). Matching itself uses [`is_builtin_sensitive`]. Every entry must also be
+/// a valid git glob: checkpoints pass them to git as `:(glob,icase)**/<pattern>`.
 pub const BUILTIN_SENSITIVE_PATTERNS: &[&str] = &[
     ".env",
     ".env.*",
+    ".envrc",
     "*.pem",
     "*.key",
     "*.pfx",
@@ -49,6 +83,9 @@ pub const BUILTIN_SENSITIVE_PATTERNS: &[&str] = &[
     "*.jks",
     "*.keystore",
     "*.ppk",
+    "*.p8",
+    "*.pk8",
+    "*.kdbx",
     "id_rsa*",
     "id_dsa*",
     "id_ecdsa*",
@@ -60,14 +97,23 @@ pub const BUILTIN_SENSITIVE_PATTERNS: &[&str] = &[
     ".git-credentials",
     ".pgpass",
     ".credentials.json",
+    ".vault-token",
+    ".dockercfg",
+    ".yarnrc.yml",
+    ".bash_history",
     ".ssh/**",
     ".aws/**",
     ".gnupg/**",
     ".kube/**",
     ".git/**",
+    ".azure/**",
+    ".terraform.d/**",
+    ".config/gcloud/**",
     ".docker/config.json",
     ".codex/auth.json",
     "gh/hosts.yml",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
 ];
 
 /// Return `true` if a normalized forward-slash relative path matches a built-in rule.
@@ -77,6 +123,13 @@ pub fn is_builtin_sensitive(rel: &str) -> bool {
     let file_name = lower.rsplit('/').next().unwrap_or(&lower);
 
     if segments.any(|seg| SENSITIVE_DIR_NAMES.contains(&seg)) {
+        return true;
+    }
+    let wrapped = format!("/{lower}/");
+    if SENSITIVE_DIR_PATHS
+        .iter()
+        .any(|dir| wrapped.contains(&format!("/{dir}/")))
+    {
         return true;
     }
     if SENSITIVE_FILE_NAMES.contains(&file_name)
@@ -115,6 +168,21 @@ mod tests {
             ".codex/auth.json",
             ".claude/.credentials.json",
             ".config/gh/hosts.yml",
+            ".envrc",
+            "sub/.ENVRC",
+            "keys/AuthKey_ABC123.p8",
+            "android/platform.pk8",
+            "vault/passwords.kdbx",
+            ".vault-token",
+            ".cargo/credentials",
+            "home/.cargo/credentials.toml",
+            ".dockercfg",
+            ".yarnrc.yml",
+            ".bash_history",
+            ".azure/accessTokens.json",
+            "home/.config/gcloud/credentials.db",
+            ".config/gcloud/application_default_credentials.json",
+            ".terraform.d/credentials.tfrc.json",
         ] {
             assert!(is_builtin_sensitive(rel), "`{rel}` must be sensitive");
         }
@@ -135,6 +203,15 @@ mod tests {
             "kube/deployment.yaml",
             "docker/config.json",
             "my-gh/hosts.yml",
+            "src/azure.rs",
+            "docs/gcloud.md",
+            ".config/gcloud.md",
+            "config/gcloud/settings.json",
+            "terraform/main.tf",
+            ".cargo/config.toml",
+            ".yarnrc",
+            "src/envrc.rs",
+            "src/p8.rs",
         ] {
             assert!(!is_builtin_sensitive(rel), "`{rel}` must stay readable");
         }
