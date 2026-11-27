@@ -7,6 +7,7 @@
 //! secret redaction, CRLF-normalized BLAKE3 hashing, deterministic
 //! token budgeting, configuration models, and pluggable trait contracts.
 
+mod atomic_write;
 pub mod budget;
 pub mod config;
 pub mod envelope;
@@ -17,6 +18,7 @@ pub mod git;
 pub mod hash;
 mod input_path;
 mod links;
+mod local_path;
 pub mod paths;
 pub mod redact;
 pub mod root_guard;

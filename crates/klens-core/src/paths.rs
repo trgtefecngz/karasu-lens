@@ -1,14 +1,13 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::PathError;
 use crate::hash::project_id_from_canonical_root;
 
-static ATOMIC_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+pub use crate::atomic_write::{write_atomic, write_atomic_private, write_atomic_with_mode_of};
+pub use crate::local_path::{is_network_or_device_path, is_plain_local_absolute};
 
 /// Default sensitive patterns blocked from both read and write access (summary of the
 /// locked built-in rules in [`crate::sensitive`]).
@@ -314,149 +313,6 @@ pub fn matches_any_pattern(rel: &RelPath, patterns: &[String]) -> bool {
     false
 }
 
-/// Atomically write bytes to `target` using a sibling temporary file and rename.
-/// Atomically replace `target` with `content` (temp file + rename). On Unix the new file keeps
-/// the permission bits of the file it replaces, so a private `0600` config stays private.
-pub fn write_atomic(target: &Path, content: &[u8]) -> Result<(), PathError> {
-    write_atomic_with_mode_of(target, content, target)
-}
-
-/// Like [`write_atomic`], but the new file takes its Unix permission bits from `mode_source`
-/// when that file exists (used for backups, which must be as private as the original).
-pub fn write_atomic_with_mode_of(
-    target: &Path,
-    content: &[u8],
-    mode_source: &Path,
-) -> Result<(), PathError> {
-    #[cfg(unix)]
-    {
-        let source_permissions = fs::metadata(mode_source).ok().map(|m| m.permissions());
-        // When the bits are copied, the temp file starts private (0600) and gets them before any
-        // byte is written, so the content is never readable more widely than the original.
-        let tmp_mode = source_permissions.as_ref().map(|_| PRIVATE_FILE_MODE);
-        write_atomic_inner(target, content, tmp_mode, |tmp_path: &Path| {
-            if let Some(permissions) = &source_permissions {
-                fs::set_permissions(tmp_path, permissions.clone())?;
-            }
-            Ok(())
-        })
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = mode_source;
-        write_atomic_inner(target, content, None, |_| Ok(()))
-    }
-}
-
-/// Like [`write_atomic`], but on Unix the file is always owner-only (`0600`), from the moment
-/// the temporary file is created. Used for files that may hold unredacted secrets, such as raw
-/// command logs. On other platforms it is the same as [`write_atomic`].
-pub fn write_atomic_private(target: &Path, content: &[u8]) -> Result<(), PathError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        write_atomic_inner(
-            target,
-            content,
-            Some(PRIVATE_FILE_MODE),
-            |tmp_path: &Path| {
-                fs::set_permissions(tmp_path, fs::Permissions::from_mode(PRIVATE_FILE_MODE))
-            },
-        )
-    }
-    #[cfg(not(unix))]
-    {
-        write_atomic_inner(target, content, None, |_| Ok(()))
-    }
-}
-
-#[cfg(unix)]
-const PRIVATE_FILE_MODE: u32 = 0o600;
-
-/// `tmp_mode` (Unix only) is the mode the temporary file is created with; `prepare_tmp` runs
-/// on the empty temporary file, before the content is written.
-fn write_atomic_inner(
-    target: &Path,
-    content: &[u8],
-    tmp_mode: Option<u32>,
-    prepare_tmp: impl FnOnce(&Path) -> std::io::Result<()>,
-) -> Result<(), PathError> {
-    #[cfg(not(unix))]
-    let _ = tmp_mode;
-    let parent = target.parent().unwrap_or_else(|| Path::new("."));
-    if !parent.as_os_str().is_empty() {
-        fs::create_dir_all(parent).map_err(|source| PathError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-
-    let file_name = target
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("klens");
-    let pid = std::process::id();
-
-    let mut tmp_path = PathBuf::new();
-    let mut tmp_file = None;
-    for _ in 0..32 {
-        let seq = ATOMIC_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let candidate = parent.join(format!(".{file_name}.klens-tmp-{pid}-{seq}"));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        if let Some(mode) = tmp_mode {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(mode);
-        }
-        match options.open(&candidate) {
-            Ok(file) => {
-                tmp_path = candidate;
-                tmp_file = Some(file);
-                break;
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(source) => {
-                return Err(PathError::Io {
-                    path: candidate,
-                    source,
-                });
-            }
-        }
-    }
-
-    let mut file = tmp_file.ok_or_else(|| PathError::Io {
-        path: target.to_path_buf(),
-        source: std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "failed to allocate unique temporary file for atomic write",
-        ),
-    })?;
-
-    let write_res = prepare_tmp(&tmp_path)
-        .and_then(|()| file.write_all(content))
-        .and_then(|()| file.sync_all());
-    drop(file);
-
-    if let Err(source) = write_res {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(PathError::Io {
-            path: tmp_path,
-            source,
-        });
-    }
-
-    if let Err(source) = fs::rename(&tmp_path, target) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(PathError::Io {
-            path: target.to_path_buf(),
-            source,
-        });
-    }
-
-    Ok(())
-}
-
 fn ensure_within_root(
     canonical_root: &Path,
     canonical_target: &Path,
@@ -491,46 +347,6 @@ fn validate_input_relative_path(path: &Path) -> Result<RelPath, PathError> {
 fn has_windows_drive_prefix(s: &str) -> bool {
     let bytes = s.as_bytes();
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
-}
-
-/// `true` for a plain local absolute path: `C:\x`, `C:/x`, `\\?\C:\x`, `//?/C:/x`, or (outside
-/// Windows) `/x`. Never a network share (`\\host\share`, `//host/share`, `\\?\UNC\...`) or a
-/// device path (`\\.\...`).
-///
-/// Call this before handing an untrusted absolute path (from an AI agent, command output or the
-/// Web UI) to the filesystem: on Windows, merely canonicalizing or stat-ing a network path opens
-/// an SMB connection, which leaks the user's NTLM credential hash and stalls for ~20 s.
-pub fn is_plain_local_absolute(path: &str) -> bool {
-    let unverbatim = path
-        .strip_prefix(r"\\?\")
-        .or_else(|| path.strip_prefix("//?/"))
-        .unwrap_or(path);
-    if has_windows_drive_prefix(unverbatim) {
-        return true;
-    }
-    !cfg!(windows) && unverbatim.starts_with('/') && !starts_with_two_separators(unverbatim)
-}
-
-/// `true` when `path` names (or may name) a network share or a Windows device namespace:
-/// anything starting with two path separators (`\\host\share`, `//host/share`, `\\?\UNC\...`,
-/// `\\.\pipe\...`), except the local verbatim drive form `\\?\C:\...`.
-///
-/// Relative paths and ordinary absolute paths return `false`. Use it to refuse a path before any
-/// filesystem call when relative input is also allowed.
-pub fn is_network_or_device_path(path: &str) -> bool {
-    let trimmed = path.trim();
-    if !starts_with_two_separators(trimmed) {
-        return false;
-    }
-    let unverbatim = trimmed
-        .strip_prefix(r"\\?\")
-        .or_else(|| trimmed.strip_prefix("//?/"));
-    !unverbatim.is_some_and(has_windows_drive_prefix)
-}
-
-fn starts_with_two_separators(path: &str) -> bool {
-    let bytes = path.as_bytes();
-    bytes.len() >= 2 && matches!(bytes[0], b'/' | b'\\') && matches!(bytes[1], b'/' | b'\\')
 }
 
 fn glob_match(pattern: &str, text: &str) -> bool {
@@ -803,107 +619,5 @@ mod tests {
             root.resolve_for_write(".env.local"),
             Err(PathError::SensitiveFileBlocked(_))
         ));
-    }
-
-    #[test]
-    fn write_atomic_creates_and_overwrites_without_leaving_temp_files() {
-        let dir = TestDir::new("atomic");
-        let target = dir.path().join("nested/config.toml");
-
-        write_atomic(&target, b"mode = \"active\"\n").unwrap();
-        assert_eq!(fs::read_to_string(&target).unwrap(), "mode = \"active\"\n");
-
-        write_atomic(&target, b"mode = \"read_only\"\n").unwrap();
-        assert_eq!(
-            fs::read_to_string(&target).unwrap(),
-            "mode = \"read_only\"\n"
-        );
-
-        let entries: Vec<_> = fs::read_dir(target.parent().unwrap())
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0], "config.toml");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn write_atomic_keeps_private_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("klens-mode-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let target = dir.join("config.json");
-        fs::write(&target, "{}").unwrap();
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
-
-        write_atomic(&target, b"{\"a\":1}").unwrap();
-        let backup = dir.join("config.json.bak");
-        write_atomic_with_mode_of(&backup, b"{}", &target).unwrap();
-
-        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        let (target_mode, backup_mode) = (mode(&target), mode(&backup));
-        let _ = fs::remove_dir_all(&dir);
-        assert_eq!(target_mode, 0o600);
-        assert_eq!(backup_mode, 0o600);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn write_atomic_private_creates_owner_only_files() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = TestDir::new("private-mode");
-        let target = dir.path().join("runs/run.log");
-
-        write_atomic_private(&target, b"ghp_secret raw output").unwrap();
-        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-
-        // Replacing a world-readable file still yields an owner-only file.
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
-        write_atomic_private(&target, b"again").unwrap();
-        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-        assert_eq!(fs::read_to_string(&target).unwrap(), "again");
-    }
-
-    #[test]
-    fn write_atomic_private_writes_content_without_temp_leftovers() {
-        let dir = TestDir::new("private-content");
-        let target = dir.path().join("run.log");
-        write_atomic_private(&target, b"one").unwrap();
-        write_atomic_private(&target, b"two").unwrap();
-        assert_eq!(fs::read_to_string(&target).unwrap(), "two");
-        let count = fs::read_dir(dir.path()).unwrap().count();
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn network_and_device_paths_are_never_plain_local() {
-        for p in [
-            r"\\192.0.2.1\share\x.rs",
-            "//192.0.2.1/share/x.rs",
-            r"\\?\UNC\192.0.2.1\share\x.rs",
-            "//?/UNC/192.0.2.1/share/x.rs",
-            r"\\.\pipe\x",
-            r"\/192.0.2.1/share",
-            r"/\192.0.2.1\share",
-        ] {
-            assert!(!is_plain_local_absolute(p), "{p} must not be local");
-            assert!(is_network_or_device_path(p), "{p} must be a network path");
-        }
-    }
-
-    #[test]
-    fn local_drive_and_relative_paths_are_not_network_paths() {
-        for p in [r"C:\x\y.rs", "C:/x/y.rs", r"\\?\C:\x\y.rs", "//?/C:/x/y.rs"] {
-            assert!(is_plain_local_absolute(p), "{p} must be local");
-            assert!(!is_network_or_device_path(p), "{p} is not a network path");
-        }
-        for p in ["src/lib.rs", ".", "/home/u/p", r"\x"] {
-            assert!(!is_network_or_device_path(p), "{p} is not a network path");
-        }
-        assert_eq!(is_plain_local_absolute("/home/u/p"), !cfg!(windows));
-        assert!(!is_plain_local_absolute("src/lib.rs"));
     }
 }
